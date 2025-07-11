@@ -129,7 +129,6 @@ metadata:
 spec:
   hubAcceptsClient: true`
 
-// nolint:gosec
 const SshPubKeySecret = `apiVersion: v1
 kind: Secret
 metadata:
@@ -273,7 +272,7 @@ metadata:
 {{ else }}
   name: "{{ .SpecialVars.CurrentNode.HostName }}"
   namespace: "{{ .Spec.ClusterName }}" 
-{{ end }}
+{{ end }}    
   annotations:
     siteconfig.open-cluster-management.io/sync-wave: "3"
     inspect.metal3.io: "{{ .SpecialVars.CurrentNode.IronicInspect }}"
