@@ -806,6 +806,53 @@ spec:
                 description: HostedCluster status for HCP clusters - vendored from
                   hypershift API.
                 properties:
+                  clusterDeploymentConditions:
+                    description: |-
+                      clusterDeploymentConditions contains Hive ClusterDeployment-compatible conditions
+                      synthesized from the HostedCluster state. This provides a familiar interface for
+                      consumers like the siteconfig operator that expect ClusterDeployment conditions.
+                      These conditions are computed by the HyperShift operator based on the actual
+                      cluster state, not copied from ClusterDeployment objects.
+                    items:
+                      description: |-
+                        ClusterDeploymentCondition represents a Hive ClusterDeployment-compatible condition.
+                        This struct matches hivev1.ClusterDeploymentCondition for compatibility.
+                        These conditions are synthesized from HostedCluster state for consumers expecting
+                        Hive ClusterDeployment format. They are computed by the HyperShift operator based
+                        on the actual cluster state, not copied from ClusterDeployment objects.
+                      properties:
+                        lastProbeTime:
+                          description: LastProbeTime is the last time we probed the
+                            condition.
+                          format: date-time
+                          type: string
+                        lastTransitionTime:
+                          description: LastTransitionTime is the last time the condition
+                            transitioned from one status to another.
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is a human-readable message indicating
+                            details about last transition.
+                          type: string
+                        reason:
+                          description: Reason is a unique, one-word, CamelCase reason
+                            for the condition's last transition.
+                          type: string
+                        status:
+                          description: Status is the status of the condition.
+                          type: string
+                        type:
+                          description: Type is the type of the condition.
+                          type: string
+                      required:
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
                   conditions:
                     description: |-
                       conditions represents the latest available observations of a control
@@ -1370,6 +1417,21 @@ spec:
                               - image
                               - version
                               type: object
+                            riskNames:
+                              description: |-
+                                riskNames represents the set of the names of conditionalUpdateRisks that are relevant to this update for some clusters.
+                                The Applies condition of each conditionalUpdateRisks entry declares if that risk applies to this cluster.
+                                A conditional update is accepted only if each of its risks either does not apply to the cluster or is considered acceptable by the cluster administrator.
+                                The latter means that the risk names are included in value of the spec.desiredUpdate.acceptRisks field.
+                                Entries must be unique and must not exceed 256 characters.
+                                riskNames must not contain more than 500 entries.
+                              items:
+                                maxLength: 256
+                                type: string
+                              maxItems: 500
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             risks:
                               description: |-
                                 risks represents the range of issues associated with
@@ -1382,6 +1444,79 @@ spec:
                                   ConditionalUpdateRisk represents a reason and cluster-state
                                   for not recommending a conditional update.
                                 properties:
+                                  conditions:
+                                    description: |-
+                                      conditions represents the observations of the conditional update
+                                      risk's current status. Known types are:
+                                      * Applies, for whether the risk applies to the current cluster.
+                                      The condition's types in the list must be unique.
+                                      conditions must not contain more than one entry.
+                                    items:
+                                      description: Condition contains details for
+                                        one aspect of the current state of this API
+                                        Resource.
+                                      properties:
+                                        lastTransitionTime:
+                                          description: |-
+                                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                                          format: date-time
+                                          type: string
+                                        message:
+                                          description: |-
+                                            message is a human readable message indicating details about the transition.
+                                            This may be an empty string.
+                                          maxLength: 32768
+                                          type: string
+                                        observedGeneration:
+                                          description: |-
+                                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                                            with respect to the current state of the instance.
+                                          format: int64
+                                          minimum: 0
+                                          type: integer
+                                        reason:
+                                          description: |-
+                                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                                            Producers of specific condition types may define expected values and meanings for this field,
+                                            and whether the values are considered a guaranteed API.
+                                            The value should be a CamelCase string.
+                                            This field may not be empty.
+                                          maxLength: 1024
+                                          minLength: 1
+                                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                                          type: string
+                                        status:
+                                          description: status of the condition, one
+                                            of True, False, Unknown.
+                                          enum:
+                                          - "True"
+                                          - "False"
+                                          - Unknown
+                                          type: string
+                                        type:
+                                          description: type of condition in CamelCase
+                                            or in foo.example.com/CamelCase.
+                                          maxLength: 316
+                                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                                          type: string
+                                      required:
+                                      - lastTransitionTime
+                                      - message
+                                      - reason
+                                      - status
+                                      - type
+                                      type: object
+                                    maxItems: 8
+                                    minItems: 1
+                                    type: array
+                                    x-kubernetes-list-map-keys:
+                                    - type
+                                    x-kubernetes-list-type: map
+                                    x-kubernetes-validations:
+                                    - message: must contain a condition of type 'Applies'
+                                      rule: self.exists_one(x, x.type == 'Applies')
                                   matchingRules:
                                     description: |-
                                       matchingRules is a slice of conditions for deciding which
@@ -1454,6 +1589,7 @@ spec:
                                 - name
                                 - url
                                 type: object
+                              maxItems: 200
                               minItems: 1
                               type: array
                               x-kubernetes-list-map-keys:
@@ -1530,8 +1666,8 @@ spec:
                             acceptedRisks:
                               description: |-
                                 acceptedRisks records risks which were accepted to initiate the update.
-                                For example, it may menition an Upgradeable=False or missing signature
-                                that was overriden via desiredUpdate.force, or an update that was
+                                For example, it may mention an Upgradeable=False or missing signature
+                                that was overridden via desiredUpdate.force, or an update that was
                                 initiated despite not being in the availableUpdates set of recommended
                                 update targets.
                               type: string

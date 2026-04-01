@@ -147,7 +147,7 @@ var _ = Describe("Reconcile", func() {
 					ci.OwnedByLabel: ci.GenerateOwnedByLabelValue(clusterNamespace, clusterName),
 				},
 			},
-			// No Status.Conditions - simulates early in lifecycle
+			// No Status.ClusterDeploymentConditions - simulates early in lifecycle
 		}
 		Expect(c.Create(ctx, hostedCluster)).To(Succeed())
 
@@ -155,28 +155,27 @@ var _ = Describe("Reconcile", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(Equal(doNotRequeue()))
 
-		// When HostedCluster conditions are missing, DeploymentConditions should all be False
-		// since none of the requirements are met
+		// When HostedCluster ClusterDeploymentConditions are missing, DeploymentConditions should all be Unknown
 		expectedConditions := []hivev1.ClusterDeploymentCondition{
 			{
 				Type:   hivev1.ClusterInstallRequirementsMetClusterDeploymentCondition,
-				Status: corev1.ConditionFalse,
-				Reason: "RequirementsNotMet",
+				Status: corev1.ConditionUnknown,
+				Reason: "ConditionsUnavailable",
 			},
 			{
 				Type:   hivev1.ClusterInstallCompletedClusterDeploymentCondition,
-				Status: corev1.ConditionFalse,
-				Reason: "InstallationInProgress",
+				Status: corev1.ConditionUnknown,
+				Reason: "ConditionsUnavailable",
 			},
 			{
 				Type:   hivev1.ClusterInstallFailedClusterDeploymentCondition,
-				Status: corev1.ConditionFalse,
-				Reason: "InstallationNotFailed",
+				Status: corev1.ConditionUnknown,
+				Reason: "ConditionsUnavailable",
 			},
 			{
 				Type:   hivev1.ClusterInstallStoppedClusterDeploymentCondition,
-				Status: corev1.ConditionFalse,
-				Reason: "InstallationInProgress",
+				Status: corev1.ConditionUnknown,
+				Reason: "ConditionsUnavailable",
 			},
 		}
 
@@ -271,6 +270,29 @@ var _ = Describe("Reconcile", func() {
 
 		for _, tc := range testCases {
 			hostedCluster.Status.Conditions = tc.hostedClusterConditions
+			// Convert expected deployment conditions to HyperShift ClusterDeploymentConditions
+			hostedCluster.Status.ClusterDeploymentConditions = []hypershiftv1beta1.ClusterDeploymentCondition{}
+			for _, expected := range tc.expectedDeploymentConds {
+				var hcCondType hypershiftv1beta1.ClusterDeploymentConditionType
+				switch expected.Type {
+				case hivev1.ClusterInstallRequirementsMetClusterDeploymentCondition:
+					hcCondType = hypershiftv1beta1.ClusterRequirementsMetType
+				case hivev1.ClusterInstallCompletedClusterDeploymentCondition:
+					hcCondType = hypershiftv1beta1.ClusterProvisionedType
+				case hivev1.ClusterInstallFailedClusterDeploymentCondition:
+					hcCondType = hypershiftv1beta1.ClusterProvisionFailedType
+				case hivev1.ClusterInstallStoppedClusterDeploymentCondition:
+					hcCondType = hypershiftv1beta1.ClusterProvisionStoppedType
+				}
+				hostedCluster.Status.ClusterDeploymentConditions = append(hostedCluster.Status.ClusterDeploymentConditions,
+					hypershiftv1beta1.ClusterDeploymentCondition{
+						Type:               hcCondType,
+						Status:             expected.Status,
+						Reason:             expected.Reason,
+						Message:            expected.Message,
+						LastTransitionTime: metav1.Now(),
+					})
+			}
 			Expect(c.Update(ctx, hostedCluster)).To(Succeed())
 
 			res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -446,6 +468,12 @@ var _ = Describe("Reconcile", func() {
 					{Type: string(hypershiftv1beta1.HostedClusterAvailable), Status: metav1.ConditionFalse},
 					// ValidReleaseInfo not True yet - still early provisioning
 				},
+				ClusterDeploymentConditions: []hypershiftv1beta1.ClusterDeploymentCondition{
+					{Type: hypershiftv1beta1.ClusterRequirementsMetType, Status: corev1.ConditionTrue, Reason: "RequirementsMet"},
+					{Type: hypershiftv1beta1.ClusterProvisionedType, Status: corev1.ConditionFalse, Reason: "InstallationInProgress"},
+					{Type: hypershiftv1beta1.ClusterProvisionFailedType, Status: corev1.ConditionFalse, Reason: "InstallationNotFailed"},
+					{Type: hypershiftv1beta1.ClusterProvisionStoppedType, Status: corev1.ConditionFalse, Reason: "InstallationInProgress"},
+				},
 			},
 		}
 
@@ -493,6 +521,12 @@ var _ = Describe("Reconcile", func() {
 					{Type: string(hypershiftv1beta1.HostedClusterProgressing), Status: metav1.ConditionFalse},
 					{Type: string(hypershiftv1beta1.HostedClusterDegraded), Status: metav1.ConditionFalse},
 				},
+				ClusterDeploymentConditions: []hypershiftv1beta1.ClusterDeploymentCondition{
+					{Type: hypershiftv1beta1.ClusterRequirementsMetType, Status: corev1.ConditionTrue, Reason: "RequirementsMet"},
+					{Type: hypershiftv1beta1.ClusterProvisionedType, Status: corev1.ConditionFalse, Reason: "InstallationFailed"},
+					{Type: hypershiftv1beta1.ClusterProvisionFailedType, Status: corev1.ConditionTrue, Reason: "InstallationFailed"},
+					{Type: hypershiftv1beta1.ClusterProvisionStoppedType, Status: corev1.ConditionTrue, Reason: "InstallationStopped"},
+				},
 			},
 		}
 
@@ -536,6 +570,12 @@ var _ = Describe("Reconcile", func() {
 					{Type: string(hypershiftv1beta1.ValidHostedClusterConfiguration), Status: metav1.ConditionFalse},
 					{Type: string(hypershiftv1beta1.SupportedHostedCluster), Status: metav1.ConditionTrue},
 					{Type: string(hypershiftv1beta1.ValidReleaseImage), Status: metav1.ConditionTrue},
+				},
+				ClusterDeploymentConditions: []hypershiftv1beta1.ClusterDeploymentCondition{
+					{Type: hypershiftv1beta1.ClusterRequirementsMetType, Status: corev1.ConditionFalse, Reason: "RequirementsNotMet"},
+					{Type: hypershiftv1beta1.ClusterProvisionedType, Status: corev1.ConditionFalse, Reason: "InstallationInProgress"},
+					{Type: hypershiftv1beta1.ClusterProvisionFailedType, Status: corev1.ConditionFalse, Reason: "InstallationNotFailed"},
+					{Type: hypershiftv1beta1.ClusterProvisionStoppedType, Status: corev1.ConditionFalse, Reason: "InstallationInProgress"},
 				},
 			},
 		}
@@ -639,6 +679,12 @@ var _ = Describe("Reconcile", func() {
 					// Still progressing - should not be stopped yet
 					{Type: string(hypershiftv1beta1.HostedClusterProgressing), Status: metav1.ConditionTrue},
 					{Type: string(hypershiftv1beta1.HostedClusterDegraded), Status: metav1.ConditionFalse},
+				},
+				ClusterDeploymentConditions: []hypershiftv1beta1.ClusterDeploymentCondition{
+					{Type: hypershiftv1beta1.ClusterRequirementsMetType, Status: corev1.ConditionTrue, Reason: "RequirementsMet"},
+					{Type: hypershiftv1beta1.ClusterProvisionedType, Status: corev1.ConditionTrue, Reason: "InstallationCompleted"},
+					{Type: hypershiftv1beta1.ClusterProvisionFailedType, Status: corev1.ConditionFalse, Reason: "InstallationNotFailed"},
+					{Type: hypershiftv1beta1.ClusterProvisionStoppedType, Status: corev1.ConditionFalse, Reason: "InstallationInProgress"},
 				},
 			},
 		}

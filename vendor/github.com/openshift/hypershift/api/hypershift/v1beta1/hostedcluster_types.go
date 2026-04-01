@@ -50,6 +50,10 @@ const (
 	// KonnectivityAgentImageAnnotation is a temporary annotation that allows the specification of the konnectivity agent image.
 	// This will be removed when Konnectivity is added to the Openshift release payload
 	KonnectivityAgentImageAnnotation = "hypershift.openshift.io/konnectivity-agent-image"
+	// NodePoolHAProxyImageAnnotation can be set on a NodePool to override the HAProxy image
+	// used for worker node API server proxy. This takes precedence over the environment
+	// variable IMAGE_SHARED_INGRESS_HAPROXY and the default shared ingress image.
+	NodePoolHAProxyImageAnnotation = "hypershift.openshift.io/haproxy-image"
 	// ControlPlaneOperatorImageAnnotation is an annotation that allows the specification of the control plane operator image.
 	// This is used for development and e2e workflows
 	ControlPlaneOperatorImageAnnotation = "hypershift.openshift.io/control-plane-operator-image"
@@ -126,6 +130,10 @@ const (
 	// a HostedControlPlane.
 	ClusterAPIOpenStackProviderImage = "hypershift.openshift.io/capi-provider-openstack-image"
 
+	// ClusterAPIGCPProviderImage overrides the CAPI GCP provider image to use for
+	// a HostedControlPlane.
+	ClusterAPIGCPProviderImage = "hypershift.openshift.io/capi-provider-gcp-image"
+
 	// OpenStackResourceControllerImage overrides the ORC image to use for a HostedControlPlane.
 	OpenStackResourceControllerImage = "hypershift.openshift.io/orc-image"
 
@@ -158,6 +166,10 @@ const (
 	// ServiceAccountSigningKeySecretKey is the name of the secret key that should contain the service account signing
 	// key if specified.
 	ServiceAccountSigningKeySecretKey = "key"
+
+	// ServiceAccountOldPublicKeySecretKey is the name of the secret key that should contain the old service account public
+	// key if specified.
+	ServiceAccountOldPublicKeySecretKey = "old-key.pub"
 
 	// DisableProfilingAnnotation is the annotation that allows disabling profiling for control plane components.
 	// Any components specified in this list will have profiling disabled. Profiling is disabled by default for etcd and konnectivity.
@@ -259,6 +271,10 @@ const (
 	// DisableMonitoringServices introduces an option to disable monitor services IBM Cloud do not use.
 	DisableMonitoringServices = "hypershift.openshift.io/disable-monitoring-services"
 
+	// EnableMetricsForwarding enables metrics forwarding from the management cluster to hosted clusters.
+	// When present, components like the endpoint-resolver and metrics-proxy will be deployed.
+	EnableMetricsForwarding = "hypershift.openshift.io/enable-metrics-forwarding"
+
 	// JSONPatchAnnotation allow modifying the kubevirt VM template using jsonpatch
 	JSONPatchAnnotation = "hypershift.openshift.io/kubevirt-vm-jsonpatch"
 
@@ -289,10 +305,41 @@ const (
 	// control plane load balancers in the AWS platform.
 	AWSLoadBalancerTargetNodesAnnotation = "hypershift.openshift.io/aws-load-balancer-target-node-labels"
 
+	// AWSLoadBalancerHealthProbeModeAnnotation allows overriding the health probe mode for AWS load balancers.
+	// Valid values are "Shared" or "ServiceNodePort".
+	// When set to "Shared", all services on the cluster that use a LoadBalancer share a single health probe (default).
+	// When set to "ServiceNodePort", each service gets its own dedicated health probe.
+	AWSLoadBalancerHealthProbeModeAnnotation = "hypershift.openshift.io/aws-load-balancer-health-probe-mode"
+
+	// SharedLoadBalancerHealthProbePathAnnotation allows overriding the health probe path for shared load balancers.
+	// This annotation applies to both AWS and Azure platforms.
+	// For AWS, this annotation only takes effect when aws-load-balancer-health-probe-mode is set to "Shared".
+	// For Azure, this annotation only takes effect when azure-load-balancer-health-probe-mode is set to "shared".
+	// The default value is "/healthz".
+	SharedLoadBalancerHealthProbePathAnnotation = "hypershift.openshift.io/shared-load-balancer-health-probe-path"
+
+	// SharedLoadBalancerHealthProbePortAnnotation allows overriding the health probe port for shared load balancers.
+	// This annotation applies to both AWS and Azure platforms.
+	// For AWS, this annotation only takes effect when aws-load-balancer-health-probe-mode is set to "Shared".
+	// For Azure, this annotation only takes effect when azure-load-balancer-health-probe-mode is set to "shared".
+	// The value must be a valid port number (1-65535). The default value is 10256.
+	SharedLoadBalancerHealthProbePortAnnotation = "hypershift.openshift.io/shared-load-balancer-health-probe-port"
+
+	// AzureLoadBalancerHealthProbeModeAnnotation allows overriding the health probe mode for Azure load balancers.
+	// Valid values are "shared" or "servicenodeport".
+	// When set to "shared", all services on the cluster that use a LoadBalancer share a single health probe (default).
+	// When set to "servicenodeport", each service gets its own dedicated health probe.
+	AzureLoadBalancerHealthProbeModeAnnotation = "hypershift.openshift.io/azure-load-balancer-health-probe-mode"
+
 	// DisableClusterAutoscalerAnnotation allows disabling the cluster autoscaler for a hosted cluster.
 	// This annotation is only set by the hypershift-operator on HosterControlPlanes.
 	// It is not set by the end-user.
 	DisableClusterAutoscalerAnnotation = "hypershift.openshift.io/disable-cluster-autoscaler"
+
+	// DisableAWSNodeTerminationHandlerAnnotation allows disabling the AWS Node Termination Handler for a hosted cluster.
+	// This annotation is only set by the hypershift-operator on HostedControlPlanes.
+	// It is not set by the end-user.
+	DisableAWSNodeTerminationHandlerAnnotation = "hypershift.openshift.io/disable-aws-node-termination-handler"
 
 	// AroHCP represents the ARO HCP managed service offering
 	AroHCP = "ARO-HCP"
@@ -325,6 +372,14 @@ const (
 	// of workers associated with the HostedCluster. The value should be the desired size label.
 	ClusterSizeOverrideAnnotation = "hypershift.openshift.io/cluster-size-override"
 
+	// ResourceBasedControlPlaneAutoscalingAnnotation, if "true", enables setting the size label of a cluster based on actual Kube API server
+	// resource usage as opposed to node count of the cluster. It only takes effect if size tagging is enabled.
+	ResourceBasedControlPlaneAutoscalingAnnotation = "hypershift.openshift.io/resource-based-cp-auto-scaling"
+
+	// RecommendedClusterSizeAnnotation is the annotation used by the control plane autoscaler to recommend a size
+	// for the hosted cluster.
+	RecommendedClusterSizeAnnotation = "hypershift.openshift.io/recommended-cluster-size"
+
 	// KubeAPIServerVerbosityLevelAnnotation allows specifying the log verbosity of kube-apiserver.
 	KubeAPIServerVerbosityLevelAnnotation = "hypershift.openshift.io/kube-apiserver-verbosity-level"
 
@@ -355,9 +410,22 @@ const (
 	// KubeAPIServerGoAwayChance allows the --goaway-chance parameter of the kube-apiserver to be overridden from its default of 0
 	KubeAPIServerGoAwayChance = "hypershift.openshift.io/kube-apiserver-goaway-chance"
 
+	// KubeAPIServerServiceAccountTokenMaxExpiration allows setting the maximum expiration duration
+	// for service account tokens issued by the kube-apiserver. This is useful during service account
+	// signing key rotation to enforce a limited token lifetime, ensuring tokens are re-issued with
+	// the new signing key. The value must be a valid Go duration string (e.g., "24h", "168h", "720h").
+	// Minimum value is 600s (10 minutes) per Kubernetes requirements.
+	KubeAPIServerServiceAccountTokenMaxExpiration = "hypershift.openshift.io/kube-apiserver-service-account-token-max-expiration"
+
 	// AWSMachinePublicIPs, if set to "true", results in an AWS machine template that creates machines with public IPs
 	// WARNING: This option is for development and testing purposes only
 	AWSMachinePublicIPs = "hypershift.openshift.io/aws-machine-public-ips"
+
+	// AWSKarpenterDefaultInstanceProfile specifies the default IAM instance profile
+	// for EC2 instances created by Karpenter. This will be set directly on the
+	// EC2NodeClass. The instance profile must already exist in AWS.
+	// This is platform-controlled and bypasses OpenshiftEC2NodeClass.
+	AWSKarpenterDefaultInstanceProfile = "hypershift.openshift.io/aws-karpenter-default-instance-profile"
 
 	// HostedClusterRestoredFromBackupAnnotation is set to true when the HostedCluster is restored from a backup using Hypershift
 	// OADP plugin. This annotation is set by the Hypershift OADP plugin during the Backup/Restore process. The annotation will trigger
@@ -381,6 +449,11 @@ const (
 	// SkipKASCertificateConflicSANValidation allows skipping the validation of the KAS certificate SANs so they do not conflict with ServicePublishingStrategy Hostname.
 	// This annotation is useful as a escape hatch, that IBM could use.
 	SkipKASConflicSANValidation = "hypershift.openshift.io/skip-kas-conflict-san-validation"
+
+	// SwiftPodNetworkInstanceAnnotation indicates that Swift networking is enabled for the HostedCluster.
+	// This is used by ARO. The value of this annotation is the name of the Swift pod network instance to be attached to the router pods.
+	// We still support absence of this annotation in ARO to keep CI working until swift is available there.
+	SwiftPodNetworkInstanceAnnotation = "hypershift.openshift.io/swift-pod-network-instance"
 )
 
 // RetentionPolicy defines the policy for handling resources associated with a cluster when the cluster is deleted.
@@ -641,7 +714,10 @@ type HostedClusterSpec struct {
 	// If the reference is set but none of the above requirements are met, the HostedCluster will enter a degraded state.
 	// TODO(alberto): Signal this in a condition.
 	//
-	// +immutable
+	// For key rotation, the secret may optionally contain an "old-key.pub" key whose content is the PEM-encoded
+	// public key of the previous signing key. When present, the kube-apiserver will accept tokens signed by
+	// both the current and previous keys, allowing for graceful key rotation without invalidating existing tokens.
+	//
 	// +optional
 	ServiceAccountSigningKey *corev1.LocalObjectReference `json:"serviceAccountSigningKey,omitempty"`
 
@@ -992,6 +1068,7 @@ type DNSSpec struct {
 // TODO this is available in vanilla kube from 1.31 API servers and in Openshift from 4.16.
 // TODO(alberto): Use CEL cidr library for all these validation when all management clusters are >= 1.31.
 // +kubebuilder:validation:XValidation:rule="(!has(self.machineNetwork) && self.clusterNetwork.all(c, self.serviceNetwork.all(s, c.cidr != s.cidr)) || (has(self.machineNetwork) && (self.machineNetwork.all(m, self.clusterNetwork.all(c, m.cidr != c.cidr)) && self.machineNetwork.all(m, self.serviceNetwork.all(s, m.cidr != s.cidr)) && self.clusterNetwork.all(c, self.serviceNetwork.all(s, c.cidr != s.cidr)))))",message="CIDR ranges in machineNetwork, clusterNetwork, and serviceNetwork must be unique and non-overlapping"
+// +kubebuilder:validation:XValidation:rule="has(self.allocateNodeCIDRs) && self.allocateNodeCIDRs == 'Enabled' ? self.networkType == 'Other' : true",message="allocateNodeCIDRs can only be set to Enabled when networkType is 'Other'"
 type ClusterNetworking struct {
 	// machineNetwork is the list of IP address pools for machines.
 	// This might be used among other things to generate appropriate networking security groups in some clouds providers.
@@ -1042,6 +1119,17 @@ type ClusterNetworking struct {
 	//
 	// +optional
 	APIServer *APIServerNetworking `json:"apiServer,omitempty"`
+
+	// allocateNodeCIDRs controls whether the kube-controller-manager manages node CIDR allocation.
+	// When using networkType=Other, it is recommended to set this field to "Enabled"
+	// if Flannel is used as the CNI, as it relies on this behavior.
+	// Default is "Disabled".
+	// This field can only be set to "Enabled" when NetworkType is "Other". Setting it to "Enabled"
+	// with any other NetworkType will result in a validation error during cluster creation.
+	//
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="allocateNodeCIDRs is immutable and cannot be modified once set."
+	AllocateNodeCIDRs *AllocateNodeCIDRsMode `json:"allocateNodeCIDRs,omitempty"`
 }
 
 // MachineNetworkEntry is a single IP address block for node IP blocks.
@@ -1130,6 +1218,18 @@ const (
 	Other NetworkType = "Other"
 )
 
+// AllocateNodeCIDRsMode specifies whether the KCM manages node CIDR allocation.
+// +kubebuilder:validation:Enum=Enabled;Disabled
+type AllocateNodeCIDRsMode string
+
+const (
+	// AllocateNodeCIDRsEnabled enables node CIDR allocation by the KCM
+	AllocateNodeCIDRsEnabled AllocateNodeCIDRsMode = "Enabled"
+
+	// AllocateNodeCIDRsDisabled disables node CIDR allocation by the KCM
+	AllocateNodeCIDRsDisabled AllocateNodeCIDRsMode = "Disabled"
+)
+
 // PlatformType is a specific supported infrastructure provider.
 // +kubebuilder:validation:MaxLength=100
 type PlatformType string
@@ -1212,7 +1312,7 @@ type PlatformSpec struct {
 	Azure *AzurePlatformSpec `json:"azure,omitempty"`
 
 	// powervs specifies configuration for clusters running on IBMCloud Power VS Service.
-	// This field is immutable. Once set, It can't be changed.
+	// This field is immutable. Once set, it cannot be changed.
 	//
 	// +optional
 	// +immutable
@@ -1720,6 +1820,54 @@ func ToPayloadArch(arch string) PayloadArchType {
 	}
 }
 
+// ClusterDeploymentConditionType defines the type of ClusterDeployment condition.
+// This matches Hive's ClusterDeploymentConditionType for compatibility.
+type ClusterDeploymentConditionType string
+
+// ClusterDeployment condition types. These constants match Hive's ClusterDeployment
+// condition types to ensure compatibility with Hive consumers.
+const (
+	// ClusterProvisionedType indicates the cluster has been provisioned successfully.
+	// This matches Hive's hivev1.ProvisionedCondition ("Provisioned").
+	ClusterProvisionedType ClusterDeploymentConditionType = "Provisioned"
+
+	// ClusterProvisionFailedType indicates the cluster provision has failed.
+	// This matches Hive's hivev1.ProvisionFailedCondition ("ProvisionFailed").
+	ClusterProvisionFailedType ClusterDeploymentConditionType = "ProvisionFailed"
+
+	// ClusterProvisionStoppedType indicates the cluster provision has been stopped.
+	// This matches Hive's hivev1.ProvisionStoppedCondition ("ProvisionStopped").
+	ClusterProvisionStoppedType ClusterDeploymentConditionType = "ProvisionStopped"
+
+	// ClusterRequirementsMetType indicates the cluster meets all requirements for provisioning.
+	// This matches Hive's hivev1.RequirementsMetCondition ("RequirementsMet").
+	ClusterRequirementsMetType ClusterDeploymentConditionType = "RequirementsMet"
+)
+
+// ClusterDeploymentCondition represents a Hive ClusterDeployment-compatible condition.
+// This struct matches hivev1.ClusterDeploymentCondition for compatibility.
+// These conditions are synthesized from HostedCluster state for consumers expecting
+// Hive ClusterDeployment format. They are computed by the HyperShift operator based
+// on the actual cluster state, not copied from ClusterDeployment objects.
+type ClusterDeploymentCondition struct {
+	// Type is the type of the condition.
+	Type ClusterDeploymentConditionType `json:"type"`
+	// Status is the status of the condition.
+	Status corev1.ConditionStatus `json:"status"`
+	// LastProbeTime is the last time we probed the condition.
+	// +optional
+	LastProbeTime metav1.Time `json:"lastProbeTime,omitempty"`
+	// LastTransitionTime is the last time the condition transitioned from one status to another.
+	// +optional
+	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
+	// Reason is a unique, one-word, CamelCase reason for the condition's last transition.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// Message is a human-readable message indicating details about last transition.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // HostedClusterStatus is the latest observed status of a HostedCluster.
 type HostedClusterStatus struct {
 	// conditions represents the latest available observations of a control
@@ -1785,6 +1933,16 @@ type HostedClusterStatus struct {
 	// configuration contains the cluster configuration status of the HostedCluster
 	// +optional
 	Configuration *ConfigurationStatus `json:"configuration,omitempty"`
+
+	// clusterDeploymentConditions contains Hive ClusterDeployment-compatible conditions
+	// synthesized from the HostedCluster state. This provides a familiar interface for
+	// consumers like the siteconfig operator that expect ClusterDeployment conditions.
+	// These conditions are computed by the HyperShift operator based on the actual
+	// cluster state, not copied from ClusterDeployment objects.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	ClusterDeploymentConditions []ClusterDeploymentCondition `json:"clusterDeploymentConditions,omitempty"`
 }
 
 // PlatformStatus contains platform-specific status
@@ -1942,6 +2100,12 @@ type OperatorConfiguration struct {
 	//
 	// +optional
 	ClusterNetworkOperator *ClusterNetworkOperatorSpec `json:"clusterNetworkOperator,omitempty"`
+
+	// ingressOperator specifies the configuration for the Ingress Operator in the hosted cluster.
+	// This allows configuring how the default ingress controller endpoints are published.
+	//
+	// +optional
+	IngressOperator *IngressOperatorSpec `json:"ingressOperator,omitempty"`
 }
 
 // +genclient
