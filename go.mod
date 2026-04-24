@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/openshift/api v0.0.0-20260304122341-cf5d8996109f // indirect
+	github.com/openshift/api v0.0.0-20260304122341-cf5d8996109f
 	github.com/openshift/assisted-service/api v0.0.0
 	github.com/openshift/assisted-service/models v0.0.0 // indirect
 )
@@ -24,12 +24,13 @@ require (
 require (
 	github.com/go-task/slim-sprig v2.20.0+incompatible
 	github.com/metal3-io/baremetal-operator/apis v0.12.3
+	github.com/openshift/hypershift/api v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
 	github.com/wI2L/jsondiff v0.7.1
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
-	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
+	k8s.io/utils v0.0.0-20260108192941-914a6e750570
 	open-cluster-management.io/api v1.2.0
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -46,7 +47,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
-	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -102,7 +102,7 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/thoas/go-funk v0.9.3 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
@@ -153,4 +153,5 @@ require (
 replace (
 	github.com/openshift/assisted-service/api => github.com/openshift/assisted-service/api v0.0.0-20251026193953-3266b6d73526 // release-ocm-2.15
 	github.com/openshift/assisted-service/models => github.com/openshift/assisted-service/models v0.0.0-20251026193953-3266b6d73526 // release-ocm-2.15
+	github.com/openshift/hypershift/api => ../hypershift/api
 )
