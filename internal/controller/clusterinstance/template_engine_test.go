@@ -946,3 +946,125 @@ var _ = Describe("ProcessTemplates", func() {
 		Expect(reflect.DeepEqual(got, expected)).To(BeTrue())
 	})
 })
+
+// renderedObjectIdentity identifies a rendered object by kind, name and sync-wave.
+type renderedObjectIdentity struct {
+	Kind string
+	Name string
+	Wave int
+}
+
+var _ = Describe("ProcessTemplates rendered objects", func() {
+	var (
+		c          client.Client
+		ctx        = context.Background()
+		tmplEngine = NewTemplateEngine()
+		testLogger = zap.NewNop().Named("Test")
+		instance   v1alpha1.ClusterInstance
+	)
+
+	const (
+		clusterName         = "site-sno-du-1"
+		clusterTemplateName = "cluster-level"
+		nodeTemplateName    = "node-level"
+	)
+
+	BeforeEach(func() {
+		c = fakeclient.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithStatusSubresource(&v1alpha1.ClusterInstance{}).
+			Build()
+
+		netConfig := GetMockNetConfig()
+
+		newNode := func(hostName, macAddress string) v1alpha1.NodeSpec {
+			return v1alpha1.NodeSpec{
+				HostName:              hostName,
+				Role:                  "master",
+				BmcAddress:            "192.0.2.1",
+				BmcCredentialsName:    v1alpha1.BmcCredentialsName{Name: "bmc-secret"},
+				BootMACAddress:        macAddress,
+				BootMode:              "UEFI",
+				AutomatedCleaningMode: "disabled",
+				IronicInspect:         "enabled",
+				TemplateRefs:          []v1alpha1.TemplateRef{{Name: nodeTemplateName, Namespace: clusterName}},
+				NodeNetwork: &aiv1beta1.NMStateConfigSpec{
+					NetConfig:  aiv1beta1.NetConfig{Raw: []byte(netConfig.RawNetConfig())},
+					Interfaces: netConfig.Interfaces,
+				},
+			}
+		}
+
+		instance = v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: clusterName,
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				ClusterName:            clusterName,
+				ClusterImageSetNameRef: "openshift-test",
+				SSHPublicKey:           "ssh-rsa",
+				BaseDomain:             "example.com",
+				TemplateRefs: []v1alpha1.TemplateRef{
+					{Name: clusterTemplateName, Namespace: clusterName},
+				},
+				Nodes: []v1alpha1.NodeSpec{
+					newNode("node-1", "00:00:5E:00:53:00"),
+					newNode("node-2", "00:00:5E:00:53:01"),
+				},
+			},
+		}
+
+		Expect(c.Create(ctx, GetMockClusterImageSet("openshift-test", "test-image"))).To(Succeed())
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: clusterTemplateName, Namespace: clusterName},
+			Data: map[string]string{
+				"AgentClusterInstall": GetMockAgentClusterInstallTemplate(),
+				"ManagedCluster":      GetMockBasicClusterTemplate("ManagedCluster"),
+			},
+		})).To(Succeed())
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeTemplateName, Namespace: clusterName},
+			Data: map[string]string{
+				"BareMetalHost": GetMockBasicNodeTemplate("BareMetalHost"),
+				"NMStateConfig": GetMockNMStateConfigTemplate(),
+			},
+		})).To(Succeed())
+	})
+
+	It("renders cluster-level objects once and node-level objects for every node", func() {
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, instance)
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(rendered.GetPruneObjects()).To(BeEmpty())
+		Expect(rendered.GetSuppressObjects()).To(BeEmpty())
+
+		objects := rendered.GetRenderObjects()
+		Expect(objects).To(HaveLen(6))
+
+		actual := make([]renderedObjectIdentity, 0, len(objects))
+		for _, object := range objects {
+			wave, waveErr := object.GetSyncWave()
+			Expect(waveErr).ToNot(HaveOccurred())
+			actual = append(actual, renderedObjectIdentity{
+				Kind: object.GetKind(),
+				Name: object.GetName(),
+				Wave: wave,
+			})
+		}
+
+		Expect(actual).To(ConsistOf(
+			renderedObjectIdentity{Kind: "AgentClusterInstall", Name: clusterName, Wave: 1},
+			renderedObjectIdentity{Kind: "ManagedCluster", Name: clusterName, Wave: 0},
+			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node-1", Wave: 0},
+			renderedObjectIdentity{Kind: "NMStateConfig", Name: "node-1", Wave: 1},
+			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node-2", Wave: 0},
+			renderedObjectIdentity{Kind: "NMStateConfig", Name: "node-2", Wave: 1},
+		))
+
+		ownedBy := GenerateOwnedByLabelValue(instance.Namespace, instance.Name)
+		for _, object := range objects {
+			Expect(object.GetLabels()).To(HaveKeyWithValue(OwnedByLabel, ownedBy))
+		}
+	})
+})

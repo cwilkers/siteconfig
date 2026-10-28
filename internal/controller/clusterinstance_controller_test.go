@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	bmh_v1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
+	aiv1beta1 "github.com/openshift/assisted-service/api/v1beta1"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 
@@ -56,6 +57,7 @@ import (
 	"github.com/stolostron/siteconfig/internal/controller/mocks"
 	"github.com/stolostron/siteconfig/internal/controller/reinstall"
 	ai_templates "github.com/stolostron/siteconfig/internal/templates/assisted-installer"
+	hcp_templates "github.com/stolostron/siteconfig/internal/templates/hosted-cluster"
 	ibi_templates "github.com/stolostron/siteconfig/internal/templates/image-based-installer"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -3750,6 +3752,217 @@ var _ = Describe("applyACMBackupLabelToInstallTemplates", func() {
 				"Default provided install template ConfigMap %s/%s should not contain the ACM DR backup label",
 				installTemplateCM.Namespace, installTemplateCM.Name,
 			)
+		}
+	})
+
+	It("applies the ACM backup label to the HCP install templates only", func() {
+		exemptNames := []string{
+			ai_templates.ClusterLevelInstallTemplates,
+			ai_templates.NodeLevelInstallTemplates,
+			ibi_templates.ClusterLevelInstallTemplates,
+			ibi_templates.NodeLevelInstallTemplates,
+		}
+		labeledNames := []string{
+			hcp_templates.ClusterLevelInstallTemplates,
+			hcp_templates.NodeLevelInstallTemplates,
+		}
+
+		clusterRefs := []v1alpha1.TemplateRef{
+			{Name: ai_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: ibi_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: hcp_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+		}
+		nodeRefs := []v1alpha1.TemplateRef{
+			{Name: ai_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: ibi_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: hcp_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+		}
+
+		clusterInstance := &v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      TestClusterInstanceName,
+				Namespace: TestClusterInstanceNamespace,
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				TemplateRefs: clusterRefs,
+				Nodes: []v1alpha1.NodeSpec{
+					{HostName: TestNode1Hostname, TemplateRefs: nodeRefs},
+				},
+			},
+		}
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+
+		allRefs := append(append([]v1alpha1.TemplateRef{}, clusterRefs...), nodeRefs...)
+		for _, ref := range allRefs {
+			Expect(c.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+				Data:       map[string]string{"foo": "bar"},
+			})).To(Succeed())
+		}
+
+		Expect(r.applyACMBackupLabelToInstallTemplates(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		for _, name := range exemptNames {
+			cm := &corev1.ConfigMap{}
+			key := types.NamespacedName{Name: name, Namespace: siteConfigNamespace}
+			Expect(c.Get(ctx, key, cm)).To(Succeed())
+			Expect(cm.GetLabels()).ToNot(HaveKey(acmBackupLabel),
+				"install template ConfigMap %s should not have the ACM backup label", name)
+		}
+
+		for _, name := range labeledNames {
+			cm := &corev1.ConfigMap{}
+			key := types.NamespacedName{Name: name, Namespace: siteConfigNamespace}
+			Expect(c.Get(ctx, key, cm)).To(Succeed())
+			Expect(cm.GetLabels()).To(HaveKeyWithValue(acmBackupLabel, acmBackupLabelValue),
+				"install template ConfigMap %s should have the ACM backup label", name)
+		}
+	})
+})
+
+var _ = Describe("renderManifests with built-in templates", func() {
+	var (
+		c                   client.Client
+		r                   *ClusterInstanceReconciler
+		ctx                 = context.Background()
+		testLogger          = zap.NewNop().Named("Test")
+		siteConfigNamespace = os.Getenv("POD_NAMESPACE")
+		clusterName         = TestClusterInstanceName
+		clusterInstance     *v1alpha1.ClusterInstance
+	)
+
+	BeforeEach(func() {
+		c = createSSAMockClient()
+		r = &ClusterInstanceReconciler{
+			Client:          c,
+			Scheme:          scheme.Scheme,
+			Log:             testLogger,
+			TmplEngine:      ci.NewTemplateEngine(),
+			DeletionHandler: &deletion.DeletionHandler{Client: c, Logger: testLogger},
+		}
+
+		Expect(c.Create(ctx, ci.GetMockClusterImageSet("openshift-test", "test-image"))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockPullSecret(TestPullSecret, clusterName))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockBmcSecret(TestBMHSecret, clusterName))).To(Succeed())
+
+		// The built-in installation template ConfigMaps are created from the shipped templates.
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      hcp_templates.ClusterLevelInstallTemplates,
+				Namespace: siteConfigNamespace,
+			},
+			Data: hcp_templates.GetClusterTemplates(),
+		})).To(Succeed())
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      hcp_templates.NodeLevelInstallTemplates,
+				Namespace: siteConfigNamespace,
+			},
+			Data: hcp_templates.GetNodeTemplates(),
+		})).To(Succeed())
+
+		netConfig := ci.GetMockNetConfig()
+
+		newNode := func(hostName, macAddress string) v1alpha1.NodeSpec {
+			return v1alpha1.NodeSpec{
+				HostName:              hostName,
+				Role:                  "worker",
+				BmcAddress:            "192.0.2.1",
+				BmcCredentialsName:    v1alpha1.BmcCredentialsName{Name: TestBMHSecret},
+				BootMACAddress:        macAddress,
+				BootMode:              "UEFI",
+				AutomatedCleaningMode: "disabled",
+				IronicInspect:         "enabled",
+				TemplateRefs: []v1alpha1.TemplateRef{
+					{Name: hcp_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+				},
+				NodeNetwork: &aiv1beta1.NMStateConfigSpec{
+					NetConfig:  aiv1beta1.NetConfig{Raw: []byte(netConfig.RawNetConfig())},
+					Interfaces: netConfig.Interfaces,
+				},
+			}
+		}
+
+		clusterInstance = &v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: clusterName,
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				ClusterName:            clusterName,
+				ClusterType:            v1alpha1.ClusterTypeHostedControlPlane,
+				PullSecretRef:          corev1.LocalObjectReference{Name: TestPullSecret},
+				ClusterImageSetNameRef: "openshift-test",
+				SSHPublicKey:           "ssh-rsa AAAATEST",
+				BaseDomain:             "example.com",
+				TemplateRefs: []v1alpha1.TemplateRef{
+					{Name: hcp_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+				},
+				Nodes: []v1alpha1.NodeSpec{
+					newNode(TestNode1Hostname, "00:00:5E:00:53:00"),
+					newNode(TestNode2Hostname, "00:00:5E:00:53:01"),
+				},
+			},
+		}
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+	})
+
+	It("renders the cluster and node level objects for a HostedControlPlane cluster", func() {
+		Expect(r.handleValidate(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		rendered, err := r.renderManifests(ctx, testLogger, clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		// No built-in manifest is pruned or suppressed by default
+		Expect(rendered.GetPruneObjects()).To(BeEmpty())
+		Expect(rendered.GetSuppressObjects()).To(BeEmpty())
+
+		objects := rendered.GetRenderObjects()
+		Expect(objects).To(HaveLen(12))
+
+		kindCounts := map[string]int{}
+		namesByKind := map[string][]string{}
+		nodePools := map[string]ci.RenderedObject{}
+		for _, object := range objects {
+			kind := object.GetKind()
+			kindCounts[kind]++
+			namesByKind[kind] = append(namesByKind[kind], object.GetName())
+			if kind == "NodePool" {
+				nodePools[object.GetName()] = object
+			}
+		}
+
+		// Cluster-level objects are rendered once, node-level objects once per node
+		Expect(kindCounts).To(Equal(map[string]int{
+			"HostedCluster":         1,
+			"ManagedCluster":        1,
+			"KlusterletAddonConfig": 1,
+			"Secret":                1,
+			"InfraEnv":              2,
+			"NodePool":              2,
+			"BareMetalHost":         2,
+			"NMStateConfig":         2,
+		}))
+
+		Expect(namesByKind["HostedCluster"]).To(ConsistOf(clusterName))
+		Expect(namesByKind["InfraEnv"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["BareMetalHost"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["NMStateConfig"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["NodePool"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+
+		// Each node is backed by a single-replica NodePool on sync-wave 2
+		for _, hostName := range []string{TestNode1Hostname, TestNode2Hostname} {
+			nodePool, ok := nodePools[hostName]
+			Expect(ok).To(BeTrue(), "expected a NodePool named after node %s", hostName)
+
+			wave, waveErr := nodePool.GetSyncWave()
+			Expect(waveErr).ToNot(HaveOccurred())
+			Expect(wave).To(Equal(2))
+
+			replicas, found, replicasErr := unstructured.NestedInt64(nodePool.GetObject().Object, "spec", "replicas")
+			Expect(replicasErr).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue(), "expected spec.replicas on NodePool %s", hostName)
+			Expect(replicas).To(Equal(int64(1)))
 		}
 	})
 })
