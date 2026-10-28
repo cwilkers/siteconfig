@@ -42,6 +42,14 @@ type SpecialVars struct {
 	CurrentNode                                     v1alpha1.NodeSpec
 	InstallConfigOverrides, ReleaseImage            string
 	ControlPlaneAgents, WorkerAgents, ArbiterAgents int
+	// GroupName is the name of the group being rendered (group scope) or the
+	// group a node belongs to (node scope); empty otherwise.
+	GroupName string
+	// NodeCount, GroupPaused, MachineConfigRefs and TuningConfigRefs are
+	// populated only when rendering a group's templates.
+	NodeCount                           int
+	GroupPaused                         bool
+	MachineConfigRefs, TuningConfigRefs []string
 }
 
 // ClusterData is a special object that provides an interface to the ClusterInstance spec fields for use in rendering
@@ -130,14 +138,29 @@ func getInstallConfigOverrides(clusterInstance *v1alpha1.ClusterInstance) (strin
 func buildClusterData(
 	ctx context.Context,
 	c client.Client,
-	clusterInstance *v1alpha1.ClusterInstance,
-	node *v1alpha1.NodeSpec,
+	scope renderScope,
 ) (data *ClusterData, err error) {
+	clusterInstance := scope.cluster
 
 	// Prepare specialVars
 	var currentNode v1alpha1.NodeSpec
-	if node != nil {
-		currentNode = *node
+	if scope.node != nil {
+		currentNode = *scope.node
+	}
+
+	// Prepare group-scope specialVars
+	var groupName string
+	nodeCount := 0
+	groupPaused := false
+	var machineConfigRefs, tuningConfigRefs []string
+	if scope.group != nil {
+		groupName = scope.group.Name
+		nodeCount = scope.group.NodeCount(clusterInstance.Spec.Nodes)
+		groupPaused = scope.group.Paused
+		machineConfigRefs = scope.group.MachineConfigRefs
+		tuningConfigRefs = scope.group.TuningConfigRefs
+	} else if scope.node != nil {
+		groupName = scope.node.Group
 	}
 
 	installConfigOverrides, err := getInstallConfigOverrides(clusterInstance)
@@ -145,12 +168,18 @@ func buildClusterData(
 		installConfigOverrides = ""
 	}
 
-	// Determine the number of control-plane, worker, and arbiter agents
+	// Determine the number of control-plane, worker, and arbiter agents,
+	// counting each node by its effective (group-merged and defaulted) role
 	controlPlaneAgents := 0
 	workerAgents := 0
 	arbiterAgents := 0
 	for _, node := range clusterInstance.Spec.Nodes {
-		switch node.Role {
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+			groupSpec = &group.NodeSpec
+		}
+		role := v1alpha1.EffectiveNodeSpec(groupSpec, node).Role
+		switch role {
 		case "master":
 			controlPlaneAgents++
 		case "worker":
@@ -186,6 +215,11 @@ func buildClusterData(
 			WorkerAgents:           workerAgents,
 			ArbiterAgents:          arbiterAgents,
 			ReleaseImage:           releaseImage,
+			GroupName:              groupName,
+			NodeCount:              nodeCount,
+			GroupPaused:            groupPaused,
+			MachineConfigRefs:      machineConfigRefs,
+			TuningConfigRefs:       tuningConfigRefs,
 		},
 	}
 

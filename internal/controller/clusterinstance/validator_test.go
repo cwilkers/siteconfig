@@ -17,6 +17,7 @@ package clusterinstance
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -220,5 +221,35 @@ var _ = Describe("Validate", func() {
 
 		err := Validate(ctx, c, clusterInstance)
 		Expect(err.Error()).To(ContainSubstring("single node OpenShift cluster-type must have exactly 1 control-plane agent"))
+	})
+
+	It("accepts a node whose group supplies its template refs", func() {
+		nodeTemplateRefs := clusterInstance.Spec.Nodes[0].TemplateRefs
+		clusterInstance.Spec.Nodes[0].TemplateRefs = nil
+		clusterInstance.Spec.Nodes[0].Group = "masters"
+		clusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "masters"},
+		}
+		clusterInstance.Spec.Groups[0].NodeSpec.TemplateRefs = nodeTemplateRefs
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+
+		Expect(Validate(ctx, c, clusterInstance)).To(Succeed())
+	})
+
+	It("fails validation when a group template ref ConfigMap does not exist", func() {
+		clusterInstance.Spec.Nodes[0].Group = "masters"
+		clusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{
+				Name: "masters",
+				GroupTemplateRefs: []v1alpha1.TemplateRef{
+					{Name: doesNotExist, Namespace: testParams.ClusterNamespace}},
+			},
+		}
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+
+		err := Validate(ctx, c, clusterInstance)
+		Expect(err.Error()).To(ContainSubstring(
+			fmt.Sprintf("failed to validate group-level TemplateRef: [%s in namespace %s] [Group: Name=masters]",
+				doesNotExist, testParams.ClusterNamespace)))
 	})
 })

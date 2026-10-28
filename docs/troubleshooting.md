@@ -51,3 +51,39 @@ A common case where the paused annotation is applied is when the `ClusterInstanc
 delete rendered manifests but encounters a deletion timeout, possibly due to a finalizer
 on a rendered manifest. In such cases, manual intervention is required to remove the blocking
 finalizer before the paused annotation can be removed.
+
+## Node references unknown group
+
+Validation fails when a node sets `spec.nodes[].group` to a name that is not
+defined in `spec.groups[]`. The error is similar to:
+
+```text
+invalid group definition(s): node "worker-1" references unknown group "workers"
+```
+
+The same error can appear in the `ClusterInstanceValidated` condition with a
+`Validation failed:` prefix. Check the group names on the resource:
+
+```sh
+oc get clusterinstance -n my-cluster my-cluster \
+  -o jsonpath='{range .spec.groups[*]}{.name}{"\n"}{end}'
+oc get clusterinstance -n my-cluster my-cluster \
+  -o jsonpath='{range .spec.nodes[*]}{.hostName}{" -> "}{.group}{"\n"}{end}'
+```
+
+Add the missing group to `spec.groups[]`, or change the node's `group` value to
+an existing group. Group names are case-sensitive and must match exactly.
+
+## Group has no member nodes
+
+Validation fails when a group is defined but no node references it:
+
+```text
+invalid group definition(s): group "storage" has no member nodes
+```
+
+This usually means a group was added before its nodes, or the node `group`
+values were renamed. Either set `group: "storage"` on at least one node, or
+remove the unused group. Groups are only rendered when they have members, and an
+empty group is treated as a configuration error rather than silently skipped.
+

@@ -426,7 +426,7 @@ func Test_buildClusterData(t *testing.T) {
 				Build()
 			ctx := context.Background()
 
-			actual, err := buildClusterData(ctx, c, tc.clusterInstance, tc.node)
+			actual, err := buildClusterData(ctx, c, renderScope{cluster: tc.clusterInstance, node: tc.node})
 			if tc.error != nil {
 				assert.Error(t, err, "Expected an error but got none")
 				assert.Equal(t, tc.error.Error(), err.Error(), "The expected and actual error message should be the same.")
@@ -439,6 +439,143 @@ func Test_buildClusterData(t *testing.T) {
 		})
 	}
 
+}
+
+func Test_buildClusterData_with_groups(t *testing.T) {
+	clusterImageSet := &hivev1.ClusterImageSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-clusterimageset"},
+		Spec:       hivev1.ClusterImageSetSpec{ReleaseImage: "test-image"},
+	}
+
+	// Two grouped nodes that omit the role (they inherit worker from the
+	// group) plus one ungrouped node that also omits the role, so it takes
+	// the master rendering default.
+	clusterInstance := &v1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-cluster"},
+		Spec: v1alpha1.ClusterInstanceSpec{
+			ClusterImageSetNameRef: "test-clusterimageset",
+			NetworkType:            "OVNKubernetes",
+			Nodes: []v1alpha1.NodeSpec{
+				{HostName: "node1", Group: "workers"},
+				{HostName: "node2", Group: "workers"},
+				{HostName: "node3"},
+			},
+			Groups: []v1alpha1.NodeGroupSpec{
+				{
+					Name:              "workers",
+					Paused:            true,
+					MachineConfigRefs: []string{"mc-1", "mc-2"},
+					TuningConfigRefs:  []string{"tuned-1"},
+					NodeSpec:          v1alpha1.GroupNodeSpec{Role: "worker"},
+				},
+			},
+		},
+	}
+
+	testcases := []struct {
+		scope    renderScope
+		expected SpecialVars
+		name     string
+	}{
+		{
+			scope: renderScope{
+				cluster: clusterInstance,
+				group:   &clusterInstance.Spec.Groups[0],
+			},
+			expected: SpecialVars{
+				ControlPlaneAgents:     1,
+				WorkerAgents:           2,
+				GroupName:              "workers",
+				NodeCount:              2,
+				GroupPaused:            true,
+				MachineConfigRefs:      []string{"mc-1", "mc-2"},
+				TuningConfigRefs:       []string{"tuned-1"},
+				ReleaseImage:           "test-image",
+				InstallConfigOverrides: "{\"networking\":{\"networkType\":\"OVNKubernetes\"}}",
+			},
+			name: "group scope populates the group special vars",
+		},
+		{
+			scope: renderScope{
+				cluster: clusterInstance,
+				node:    &clusterInstance.Spec.Nodes[0],
+			},
+			expected: SpecialVars{
+				ControlPlaneAgents:     1,
+				WorkerAgents:           2,
+				CurrentNode:            clusterInstance.Spec.Nodes[0],
+				GroupName:              "workers",
+				ReleaseImage:           "test-image",
+				InstallConfigOverrides: "{\"networking\":{\"networkType\":\"OVNKubernetes\"}}",
+			},
+			name: "node scope sets only GroupName",
+		},
+		{
+			scope: renderScope{
+				cluster: clusterInstance,
+				node:    &clusterInstance.Spec.Nodes[2],
+			},
+			expected: SpecialVars{
+				ControlPlaneAgents:     1,
+				WorkerAgents:           2,
+				CurrentNode:            clusterInstance.Spec.Nodes[2],
+				ReleaseImage:           "test-image",
+				InstallConfigOverrides: "{\"networking\":{\"networkType\":\"OVNKubernetes\"}}",
+			},
+			name: "ungrouped node scope leaves all group vars unset",
+		},
+	}
+
+	testScheme := scheme.Scheme
+	schemeErr := hivev1.AddToScheme(testScheme)
+	assert.NoError(t, schemeErr)
+	c := fakeclient.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(clusterImageSet).
+		Build()
+	ctx := context.Background()
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := buildClusterData(ctx, c, tc.scope)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, actual.SpecialVars)
+		})
+	}
+}
+
+func Test_buildClusterData_counts_explicit_node_role_over_group(t *testing.T) {
+	clusterImageSet := &hivev1.ClusterImageSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-clusterimageset"},
+		Spec:       hivev1.ClusterImageSetSpec{ReleaseImage: "test-image"},
+	}
+
+	clusterInstance := &v1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-cluster"},
+		Spec: v1alpha1.ClusterInstanceSpec{
+			ClusterImageSetNameRef: "test-clusterimageset",
+			Nodes: []v1alpha1.NodeSpec{
+				{HostName: "node1", Group: "workers", Role: "master"},
+				{HostName: "node2", Group: "workers"},
+			},
+			Groups: []v1alpha1.NodeGroupSpec{
+				{Name: "workers", NodeSpec: v1alpha1.GroupNodeSpec{Role: "worker"}},
+			},
+		},
+	}
+
+	testScheme := scheme.Scheme
+	schemeErr := hivev1.AddToScheme(testScheme)
+	assert.NoError(t, schemeErr)
+	c := fakeclient.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(clusterImageSet).
+		Build()
+
+	data, err := buildClusterData(context.Background(), c, renderScope{cluster: clusterInstance})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, data.SpecialVars.ControlPlaneAgents)
+	assert.Equal(t, 1, data.SpecialVars.WorkerAgents)
 }
 
 func TestPruneManifest(t *testing.T) {

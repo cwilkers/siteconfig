@@ -179,9 +179,8 @@ type NodeSpec struct {
 
 	// When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
 	// Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
-	// the disk. The default value is disabled.
+	// the disk. Defaults to disabled when rendering the node.
 	// +optional
-	// +kubebuilder:default:=disabled
 	AutomatedCleaningMode bmh_v1alpha1.AutomatedCleaningMode `json:"automatedCleaningMode,omitempty"`
 
 	// RootDeviceHints specifies the device for deployment.
@@ -218,8 +217,7 @@ type NodeSpec struct {
 	CPUArchitecture CPUArchitecture `json:"cpuArchitecture,omitempty"`
 
 	// bootMode selects the method of initializing the hardware during boot.
-	// Defaults to UEFI.
-	// +kubebuilder:default:=UEFI
+	// Defaults to UEFI when rendering the node.
 	// +optional
 	BootMode bmh_v1alpha1.BootMode `json:"bootMode,omitempty"`
 
@@ -237,9 +235,9 @@ type NodeSpec struct {
 	// +optional
 	IgnitionConfigOverride string `json:"ignitionConfigOverride,omitempty"`
 
-	// role specifies the role of this node in the cluster. Defaults to "master".
+	// role specifies the role of this node in the cluster. Defaults to "master"
+	// when rendering the node.
 	// +kubebuilder:validation:Enum=master;worker;arbiter
-	// +kubebuilder:default:=master
 	// +optional
 	Role string `json:"role,omitempty"`
 
@@ -283,15 +281,175 @@ type NodeSpec struct {
 	// ironicInspect controls automatic hardware introspection performed by
 	// Ironic during BareMetalHost registration. The default empty string
 	// enables inspection. Set to "disabled" to skip hardware inspection.
-	// +kubebuilder:default:=""
 	// +optional
 	IronicInspect IronicInspect `json:"ironicInspect,omitempty"`
 
 	// TemplateRefs is a list of references to node-level templates. A node-level template consists of a ConfigMap
 	// in which the keys of the data field represent the kind of the installation manifest(s).
 	// Node-level templates are instantiated once for each node in the ClusterInstance CR.
+	// A node that references a group (see the group field) may omit templateRefs when
+	// the group's nodeSpec.templateRefs supplies them; when both are set they are unioned.
+	// Admission rejects any node whose effective templateRefs (its own unioned with
+	// its group's) are empty.
+	// +optional
+	TemplateRefs []TemplateRef `json:"templateRefs,omitempty"`
+
+	// group is the name of the group (spec.groups[].name) this node belongs to.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Group string `json:"group,omitempty"`
+}
+
+// NodeGroupSpec defines a named group of nodes that share common configuration.
+// Nodes reference a group by setting nodes[].group to the group's name.
+type NodeGroupSpec struct {
+	// name identifies the group. It must be unique within the ClusterInstance
+	// and is referenced by nodes[].group.
 	// +required
-	TemplateRefs []TemplateRef `json:"templateRefs"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// paused pauses reconciliation of the group's rendered objects when true.
+	// It is exposed to group templates as .SpecialVars.GroupPaused; the operator
+	// itself does not interpret it.
+	// +optional
+	// +kubebuilder:default:=false
+	Paused bool `json:"paused,omitempty"`
+
+	// machineConfigRefs is a list of ConfigMap names exposed to the group's
+	// templates as .SpecialVars.MachineConfigRefs. The operator treats the
+	// entries as opaque names.
+	// +optional
+	MachineConfigRefs []string `json:"machineConfigRefs,omitempty"`
+
+	// tuningConfigRefs is a list of ConfigMap names exposed to the group's
+	// templates as .SpecialVars.TuningConfigRefs. The operator treats the
+	// entries as opaque names.
+	// +optional
+	TuningConfigRefs []string `json:"tuningConfigRefs,omitempty"`
+
+	// groupTemplateRefs is a list of references to group-level templates.
+	// Group-level templates are instantiated once per group, keyed by the
+	// group name.
+	// +optional
+	GroupTemplateRefs []TemplateRef `json:"groupTemplateRefs,omitempty"`
+
+	// extraAnnotations specifies additional annotations keyed by the Kind of
+	// resources rendered from this group's groupTemplateRefs (e.g.,
+	// "NodePool": {"example.com/owner": "platform"}). On a key collision the
+	// group value wins over cluster-level extraAnnotations. Annotations
+	// already defined in the template take precedence and are not overwritten.
+	// +optional
+	ExtraAnnotations map[string]map[string]string `json:"extraAnnotations,omitempty"`
+
+	// extraLabels specifies additional labels keyed by the Kind of resources
+	// rendered from this group's groupTemplateRefs (e.g.,
+	// "InfraEnv": {"tier": "compute"}). On a key collision the group value
+	// wins over cluster-level extraLabels. Labels already defined in the
+	// template take precedence and are not overwritten.
+	// +optional
+	ExtraLabels map[string]map[string]string `json:"extraLabels,omitempty"`
+
+	// nodeSpec holds node configuration shared by the group's member nodes.
+	// Member nodes override these values; see the ClusterInstanceSpec.groups
+	// field for the merge precedence. Identity fields (hostName, bmcAddress,
+	// bootMACAddress, bmcCredentialsName, hostRef, nodeNetwork) are not
+	// accepted here and must be set on each node.
+	// +optional
+	NodeSpec GroupNodeSpec `json:"nodeSpec,omitempty"`
+}
+
+// GroupNodeSpec is the shareable subset of NodeSpec configuration that may be
+// defined on a group and inherited by its member nodes.
+type GroupNodeSpec struct {
+	// role specifies the role of the group's member nodes in the cluster.
+	// Defaults to "master" when rendering the node.
+	// +kubebuilder:validation:Enum=master;worker;arbiter
+	// +optional
+	Role string `json:"role,omitempty"`
+
+	// CPUArchitecture is the software architecture of the group's member nodes.
+	// If it is not defined here then it is inherited from the ClusterInstanceSpec.
+	// +kubebuilder:validation:Enum=x86_64;aarch64
+	// +optional
+	CPUArchitecture CPUArchitecture `json:"cpuArchitecture,omitempty"`
+
+	// bootMode selects the method of initializing the hardware during boot.
+	// Defaults to UEFI when rendering the node.
+	// +optional
+	BootMode bmh_v1alpha1.BootMode `json:"bootMode,omitempty"`
+
+	// When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
+	// Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
+	// the disk. Defaults to disabled when rendering the node.
+	// +optional
+	AutomatedCleaningMode bmh_v1alpha1.AutomatedCleaningMode `json:"automatedCleaningMode,omitempty"`
+
+	// RootDeviceHints specifies the device for deployment.
+	// Identifiers that are stable across reboots are recommended, for example, wwn: <disk_wwn> or
+	// deviceName: /dev/disk/by-path/<device_path>
+	// +optional
+	RootDeviceHints *bmh_v1alpha1.RootDeviceHints `json:"rootDeviceHints,omitempty"`
+
+	// ironicInspect controls automatic hardware introspection performed by
+	// Ironic during BareMetalHost registration. The default empty string
+	// enables inspection. Set to "disabled" to skip hardware inspection.
+	// +optional
+	IronicInspect IronicInspect `json:"ironicInspect,omitempty"`
+
+	// installerArgs is a JSON-formatted string of arguments passed to the
+	// coreos-installer via the bare metal agent controller. Rendered as the
+	// bmac.agent-install.openshift.io/installer-args annotation on the
+	// BareMetalHost resource. Must be valid JSON when provided.
+	// +optional
+	InstallerArgs string `json:"installerArgs,omitempty"`
+
+	// ignitionConfigOverride is a JSON-formatted string containing
+	// host-specific Ignition config overrides. Rendered as the
+	// bmac.agent-install.openshift.io/ignition-config-overrides annotation
+	// on the BareMetalHost resource. Must be valid JSON when provided.
+	// +optional
+	IgnitionConfigOverride string `json:"ignitionConfigOverride,omitempty"`
+
+	// NodeLabels allows the specification of custom roles for the group's member
+	// nodes in your managed clusters.
+	// +optional
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+
+	// extraAnnotations specifies additional annotations keyed by the Kubernetes
+	// resource Kind (e.g., "BareMetalHost", "NMStateConfig") for the group's
+	// member nodes. On a key collision the node value wins.
+	// +optional
+	ExtraAnnotations map[string]map[string]string `json:"extraAnnotations,omitempty"`
+
+	// extraLabels specifies additional labels keyed by the Kubernetes resource
+	// Kind (e.g., "BareMetalHost", "NMStateConfig") for the group's member
+	// nodes. On a key collision the node value wins.
+	// +optional
+	ExtraLabels map[string]map[string]string `json:"extraLabels,omitempty"`
+
+	// suppressedManifests is a list of Kubernetes resource Kinds to exclude
+	// from rendering for the group's member nodes. Combined with cluster-level
+	// and node-level suppressedManifests.
+	// +optional
+	SuppressedManifests []string `json:"suppressedManifests,omitempty"`
+
+	// pruneManifests is a list of resource references (apiVersion + kind)
+	// identifying manifests that should be skipped during rendering and
+	// deleted from the cluster if previously applied, for the group's member
+	// nodes. Combined with cluster-level and node-level pruneManifests.
+	// +optional
+	PruneManifests []ResourceRef `json:"pruneManifests,omitempty"`
+
+	// TemplateRefs is a list of references to node-level templates inherited
+	// by the group's member nodes. A node may omit its own templateRefs when
+	// the group supplies them; when both are set they are unioned with the
+	// group entries first.
+	// +optional
+	TemplateRefs []TemplateRef `json:"templateRefs,omitempty"`
 }
 
 // ClusterType specifies the topology of the cluster.
@@ -536,6 +694,17 @@ type ClusterInstanceSpec struct {
 	// and roles of nodes must be compatible with the selected clusterType.
 	// +required
 	Nodes []NodeSpec `json:"nodes"`
+
+	// groups defines optional node groups. Nodes reference a group by setting
+	// nodes[].group to the group's name. Shareable node configuration lives in
+	// groups[].nodeSpec and is merged into each member node with the precedence
+	// nodes[] > groups[].nodeSpec > .spec: scalar fields resolve to the most
+	// specific scope that sets them, maps are unioned by key with the node
+	// value winning on collision, and lists are unioned (group entries first).
+	// The group render loop is a no-op when groups is unset.
+	// +optional
+	// +kubebuilder:validation:MaxItems=100
+	Groups []NodeGroupSpec `json:"groups,omitempty"`
 
 	// reinstall triggers a cluster reinstallation workflow when populated.
 	// This is a destructive operation: all rendered resources (except

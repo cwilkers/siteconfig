@@ -32,6 +32,46 @@ var clusterInstanceLogger = logf.Log.WithName("clusterinstance-webhook")
 // Validation error message
 const validationFailedMsg = "validation failed"
 
+// v1NodeTemplateConfigMaps lists the built-in node template ConfigMaps that
+// predate node grouping. A grouped node whose effective templates still
+// reference one of them most likely missed the migration to grouped-node
+// templates. Custom template names are deliberately not matched.
+var v1NodeTemplateConfigMaps = map[string]bool{
+	"ai-node-templates-v1":  true,
+	"hcp-node-templates-v1": true,
+	"ibi-node-templates-v1": true,
+}
+
+// groupTemplateMismatchWarnings returns one warning per grouped node whose
+// effective node templates still reference a v1 node template ConfigMap.
+func groupTemplateMismatchWarnings(clusterInstance *ClusterInstance) admission.Warnings {
+	groupIndex, err := clusterInstance.Spec.groupIndex()
+	if err != nil || len(groupIndex) == 0 {
+		return nil
+	}
+
+	var warnings admission.Warnings
+	for _, node := range clusterInstance.Spec.Nodes {
+		if node.Group == "" {
+			continue
+		}
+		group, exists := groupIndex[node.Group]
+		if !exists {
+			continue
+		}
+		for _, ref := range node.EffectiveTemplateRefs(&group.NodeSpec) {
+			if v1NodeTemplateConfigMaps[ref.Name] {
+				warnings = append(warnings, fmt.Sprintf(
+					"node %q references group %q but still uses node template %q; "+
+						"consider switching to a grouped-node template",
+					node.HostName, node.Group, ref.Name))
+				break
+			}
+		}
+	}
+	return warnings
+}
+
 // clusterInstanceValidator handles validation for ClusterInstance resources.
 type clusterInstanceValidator struct{}
 
@@ -78,7 +118,7 @@ func (v *clusterInstanceValidator) ValidateCreate(
 	}
 
 	log.Info("Validations passed for create request")
-	return nil, nil
+	return groupTemplateMismatchWarnings(clusterInstance), nil
 }
 
 // ValidateUpdate validates updates to a ClusterInstance object.
@@ -127,7 +167,7 @@ func (v *clusterInstanceValidator) ValidateUpdate(
 			return nil, fmt.Errorf("%s: %w", validationFailedMsg, err)
 		}
 		log.Info("Validations passed for update request")
-		return nil, nil
+		return groupTemplateMismatchWarnings(newClusterInstance), nil
 	}
 
 	// Partial changes allowed - validate specific fields based on permission level
@@ -163,7 +203,7 @@ func (v *clusterInstanceValidator) ValidateUpdate(
 	}
 
 	log.Info("Validations passed for update request")
-	return nil, nil
+	return groupTemplateMismatchWarnings(newClusterInstance), nil
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type

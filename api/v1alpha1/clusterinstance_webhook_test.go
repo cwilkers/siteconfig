@@ -612,3 +612,145 @@ var _ = Describe("ValidateUpdate", func() {
 		})
 	})
 })
+
+var _ = Describe("groupTemplateMismatchWarnings", func() {
+	var clusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		clusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						TemplateRefs: []TemplateRef{{Name: "ai-node-templates-v1", Namespace: "default"}},
+					},
+				},
+				Groups: []NodeGroupSpec{
+					{Name: "workers"},
+				},
+			},
+		}
+	})
+
+	It("warns when a grouped node still uses a v1 node template", func() {
+		warnings := groupTemplateMismatchWarnings(clusterInstance)
+		Expect(warnings).ToNot(BeEmpty())
+		Expect(warnings[0]).To(ContainSubstring("ai-node-templates-v1"))
+		Expect(warnings[0]).To(ContainSubstring("node1"))
+	})
+
+	It("warns when the group nodeSpec supplies a v1 node template", func() {
+		clusterInstance.Spec.Nodes[0].TemplateRefs = nil
+		clusterInstance.Spec.Groups[0].NodeSpec.TemplateRefs = []TemplateRef{
+			{Name: "hcp-node-templates-v1", Namespace: "default"},
+		}
+		warnings := groupTemplateMismatchWarnings(clusterInstance)
+		Expect(warnings).ToNot(BeEmpty())
+		Expect(warnings[0]).To(ContainSubstring("hcp-node-templates-v1"))
+	})
+
+	It("does not warn for custom templates on grouped nodes", func() {
+		clusterInstance.Spec.Nodes[0].TemplateRefs = []TemplateRef{
+			{Name: "custom-node-template", Namespace: "default"},
+		}
+		warnings := groupTemplateMismatchWarnings(clusterInstance)
+		Expect(warnings).To(BeEmpty())
+	})
+
+	It("does not warn for ungrouped nodes", func() {
+		clusterInstance.Spec.Nodes[0].Group = ""
+		clusterInstance.Spec.Groups = nil
+		warnings := groupTemplateMismatchWarnings(clusterInstance)
+		Expect(warnings).To(BeEmpty())
+	})
+})
+
+var _ = Describe("ValidateCreate with group template mismatch", func() {
+	var (
+		v               *clusterInstanceValidator
+		clusterInstance *ClusterInstance
+	)
+
+	BeforeEach(func() {
+		v = &clusterInstanceValidator{}
+		clusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						Role:         "master",
+						TemplateRefs: []TemplateRef{{Name: "ai-node-templates-v1", Namespace: "default"}},
+					},
+				},
+				Groups:      []NodeGroupSpec{{Name: "workers"}},
+				ClusterType: ClusterTypeSNO,
+			},
+		}
+	})
+
+	It("returns the mismatch warning on the create success path", func() {
+		warnings, err := v.ValidateCreate(context.Background(), clusterInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("ai-node-templates-v1"))
+	})
+
+	It("returns no warnings for an ungrouped valid ClusterInstance", func() {
+		clusterInstance.Spec.Nodes[0].Group = ""
+		clusterInstance.Spec.Groups = nil
+		warnings, err := v.ValidateCreate(context.Background(), clusterInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(BeNil())
+	})
+})
+
+var _ = Describe("ValidateUpdate with group template mismatch", func() {
+	var (
+		ctx                                    context.Context
+		v                                      *clusterInstanceValidator
+		oldClusterInstance, newClusterInstance *ClusterInstance
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		v = &clusterInstanceValidator{}
+
+		oldClusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				HoldInstallation: true,
+				TemplateRefs:     []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						Role:         "master",
+						TemplateRefs: []TemplateRef{{Name: "ai-node-templates-v1", Namespace: "default"}},
+					},
+				},
+				Groups:      []NodeGroupSpec{{Name: "workers"}},
+				ClusterType: ClusterTypeSNO,
+			},
+		}
+		newClusterInstance = oldClusterInstance.DeepCopy()
+	})
+
+	It("returns the mismatch warning on the update success path", func() {
+		warnings, err := v.ValidateUpdate(ctx, oldClusterInstance, newClusterInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("ai-node-templates-v1"))
+	})
+
+	It("returns no warnings on the update success path for ungrouped nodes", func() {
+		oldClusterInstance.Spec.Nodes[0].Group = ""
+		oldClusterInstance.Spec.Groups = nil
+		newClusterInstance = oldClusterInstance.DeepCopy()
+		warnings, err := v.ValidateUpdate(ctx, oldClusterInstance, newClusterInstance)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(BeNil())
+	})
+})

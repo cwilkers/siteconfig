@@ -15,6 +15,8 @@ See the License for the specific language governing permissions and
 
 package imagebasedinstaller
 
+// IBI is a single-node flow: no group or grouped-node template families.
+
 // Default image-based installer install template names
 const (
 	ClusterLevelInstallTemplates = "ibi-cluster-templates-v1"

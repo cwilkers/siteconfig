@@ -1,0 +1,116 @@
+# example-node[1-7]-bmh-secret & assisted-deployment-pull-secret need to be created under same namespace example-ai-groups
+---
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-ai-groups"
+  namespace: "example-ai-groups"
+spec:
+  baseDomain: "example.com"
+  pullSecretRef:
+    name: "assisted-deployment-pull-secret"
+  clusterImageSetNameRef: "openshift-4.16"
+  sshPublicKey: "ssh-rsa AAAA..."
+  clusterName: "example-ai-groups"
+  clusterType: HighlyAvailable
+  networkType: "OVNKubernetes"
+  clusterNetwork:
+    - cidr: 1001:1::/48
+      hostPrefix: 64
+  # For 3-node and standard clusters with static IPs, the API and Ingress IPs must be configured here
+  apiVIPs:
+    - 1111:2222:3333:4444::1:1
+  ingressVIPs:
+    - 1111:2222:3333:4444::1:2
+  serviceNetwork:
+    - cidr: 1001:2::/112
+  additionalNTPSources:
+    - 1111:2222:3333:4444::2
+  templateRefs:
+    - name: ai-cluster-templates-v1
+      namespace: siteconfig-operator
+  # Group templates render once per group; grouped-node templates render once
+  # per node in the group. See docs/configure_siteconfig.md for merge rules.
+  groups:
+    # The workers group performs a double-duty. Control plane nodes are
+    # provisioned the same as the worker nodes, but with a different role
+    # setting. This could be a separate "control-plane" group, but it is less
+    # overhead to override the one parameter three times.
+    - name: "workers"
+      groupTemplateRefs:
+        - name: ai-group-templates-v1
+          namespace: siteconfig-operator
+      nodeSpec:
+        role: "worker"
+        bootMode: "UEFISecureBoot"
+        rootDeviceHints:
+          deviceName: "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0"
+        templateRefs:
+          - name: ai-grouped-node-templates-v1
+            namespace: siteconfig-operator
+    # The storage group has a different disk layout and requires a nodeLabel,
+    # so it makes sense to define a new group.
+    - name: "storage"
+      groupTemplateRefs:
+        - name: ai-group-templates-v1
+          namespace: siteconfig-operator
+      nodeSpec:
+        role: "worker"
+        bootMode: "UEFISecureBoot"
+        rootDeviceHints:
+          deviceName: "/dev/disk/by-path/pci-0000:08:00.0-scsi-0:4:0:0"
+        nodeLabels:
+          node-role.kubernetes.io/storage: ""
+        templateRefs:
+          - name: ai-grouped-node-templates-v1
+            namespace: siteconfig-operator
+  nodes:
+    # Nodes inherit their role and templates from the group's nodeSpec. Add
+    # nodeNetwork here to render NMStateConfigs.
+    - hostName: "example-node1.example.com"
+      group: "workers"
+      # Setting role for the three control plane nodes overrides the group's
+      # default, reducing the number of groups required
+      role: "master"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node1-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:11"
+    - hostName: "example-node2.example.com"
+      group: "workers"
+      role: "master"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:2]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node2-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:22"
+    - hostName: "example-node3.example.com"
+      group: "workers"
+      role: "master"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:3]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node3-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:33"
+    - hostName: "example-node4.example.com"
+      group: "workers"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:4]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node4-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:44"
+    - hostName: "example-node5.example.com"
+      group: "workers"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:5]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node5-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:55"
+    - hostName: "example-node6.example.com"
+      group: "storage"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:6]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node6-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:66"
+    - hostName: "example-node7.example.com"
+      group: "storage"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:7]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node7-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:77"

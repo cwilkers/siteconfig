@@ -4,5 +4,7 @@ resources:
 - assisted-installer/example-sno.yaml
 - assisted-installer/example-standard.yaml
 - assisted-installer/example-3node.yaml
+- assisted-installer/example-groups.yaml
+- hosted-control-plane/example-groups.yaml
 - image-based-installer/example-sno.yaml
 #+kubebuilder:scaffold:manifestskustomizesamples

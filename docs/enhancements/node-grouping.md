@@ -212,7 +212,7 @@ document are to be interpreted as described in RFC 2119.
 - **group:** A string `NodeSpec.group` identifying which group a
   node belongs to.
 - **`spec.groups[]`:** An array on `ClusterInstance.spec` holding named
-  entries. Group-only fields (`paused`, `configRefs`, `tuningConfigRefs`,
+  entries. Group-only fields (`paused`, `machineConfigRefs`, `tuningConfigRefs`,
   `groupTemplateRefs`, `extraLabels`, `extraAnnotations`) sit on the
   entry. Shareable node fields sit under `nodeSpec`.
 - **`spec.groups[].nodeSpec`:** The shareable subset of `NodeSpec` for
@@ -277,7 +277,7 @@ spec:
   groups:                           # NEW, optional
     - name: workers                 # MUST be unique; matches node.group
       paused: false                 # optional; see Group Pause
-      configRefs:                   # optional; see Group Config Refs
+      machineConfigRefs:           # optional; see Group Config Refs
         - worker-machineconfig
       tuningConfigRefs:             # optional; see Group Config Refs
         - worker-performanceprofile
@@ -317,7 +317,7 @@ spec:
 **Field rules:**
 
 - `groups[].name` MUST be unique within the ClusterInstance.
-- Group-only fields (`name`, `paused`, `configRefs`, `tuningConfigRefs`,
+- Group-only fields (`name`, `paused`, `machineConfigRefs`, `tuningConfigRefs`,
   `groupTemplateRefs`, `extraLabels`, `extraAnnotations`) live on the
   `groups[]` entry. `extraLabels` and `extraAnnotations` here apply
   only to CRs rendered from that group's `groupTemplateRefs`.
@@ -348,7 +348,7 @@ while rendering that group's templates.
 |---|---|
 | `name` | MUST be unique; matches `node.group` |
 | `paused` | Exposed as `.SpecialVars.GroupPaused` |
-| `configRefs` | |
+| `machineConfigRefs` | |
 | `tuningConfigRefs` | |
 | `groupTemplateRefs` | Rendered once per group |
 | `extraAnnotations` | Group-template CRs only. Union with `spec.extraAnnotations`; group wins. |
@@ -445,7 +445,7 @@ ClusterInstance
 | `.SpecialVars.GroupName` | n/a | `node.group` value | `node.group` (unset if no group) |
 | `.SpecialVars.NodeCount` | n/a | number of nodes in group | n/a |
 | `.SpecialVars.GroupPaused` | n/a | `groups[].paused` (bool, default `false`) | n/a |
-| `.SpecialVars.ConfigRefs` | n/a | `groups[].configRefs` (list of ConfigMap names) | n/a |
+| `.SpecialVars.MachineConfigRefs` | n/a | `groups[].machineConfigRefs` (list of ConfigMap names) | n/a |
 | `.SpecialVars.TuningConfigRefs` | n/a | `groups[].tuningConfigRefs` (list of ConfigMap names) | n/a |
 
 - `.SpecialVars.GroupName` MUST equal `node.group` when set. When `group`
@@ -456,8 +456,8 @@ identity resources with `CurrentNode.HostName` respectively.
 - `.SpecialVars.GroupPaused` MUST equal `groups[].paused` (default
   `false` when unset) and SHOULD NOT be exposed to node / grouped-node
   templates; see [Group Pause](#group-pause).
-- `.SpecialVars.ConfigRefs` and `.SpecialVars.TuningConfigRefs` MUST
-  equal `groups[].configRefs` and `groups[].tuningConfigRefs`
+- `.SpecialVars.MachineConfigRefs` and `.SpecialVars.TuningConfigRefs` MUST
+  equal `groups[].machineConfigRefs` and `groups[].tuningConfigRefs`
   respectively (empty list when unset) and SHOULD NOT be exposed to
   node / grouped-node templates; see
   [Group Config Refs](#group-config-refs).
@@ -489,8 +489,8 @@ only require updating the shipped template.
 
 ### Group Config Refs
 
-`.SpecialVars.ConfigRefs` and `.SpecialVars.TuningConfigRefs` carry
-the group's `configRefs` / `tuningConfigRefs` — each a list of
+`.SpecialVars.MachineConfigRefs` and `.SpecialVars.TuningConfigRefs` carry
+the group's `machineConfigRefs` / `tuningConfigRefs` — each a list of
 names — to group-template rendering. The operator provided
 `hcp-group-templates-v1` template provides a NodePool definition that
 populates `spec.config` and `spec.tuningConfig` (both `[]LocalObjectReference`)
@@ -536,12 +536,13 @@ ConfigMaps as HCP does.
 
 1. **One group per node:** A node MUST reference at most one group.
 
-2. **CRD defaulting trap:** `NodeSpec.role` defaults to `master` via
-   `+kubebuilder:default`. The merge implementation MUST distinguish
-   "user wrote `role: master`" from "CRD defaulted `role` to `master`"
-   so that `groups[].nodeSpec.role: worker` is not blocked by a node's
-   defaulted value. Use user-specified / raw field detection, not the
-   post-defaulted Go struct.
+2. **Defaults are applied after the merge:** `NodeSpec.role`, `bootMode`, and
+   `automatedCleaningMode` MUST NOT carry a `+kubebuilder:default`. A CRD
+   default is persisted on create, so a defaulted node value cannot be
+   distinguished from one the user authored, and it would shadow
+   `groups[].nodeSpec` during the merge. The rendering defaults (`master`,
+   `UEFI`, `disabled`) MUST instead be applied after the merge, only to
+   fields left unset at both the node and group scope.
 
 3. **IBI group templates:** IBI has no need of grouping because it is a SNO
    case. We SHOULD NOT ship an `ibi-group-templates-v1` ConfigMap.
@@ -567,7 +568,8 @@ ConfigMaps as HCP does.
 - Merge logic for all field types (union, scalar, nested), reading
   shareable node fields from `groups[].nodeSpec`
 - Validation of group references and constraints
-- CRD default detection (role, bootMode) during merge
+- Post-merge defaulting of role, bootMode, and automatedCleaningMode, and
+  explicit node values taking precedence over group values and defaults
 - Mixed grouped/ungrouped node rendering
 - `.SpecialVars.GroupPaused` correctly reflects `groups[].paused`
   during group-template rendering, and is absent/false by default
@@ -685,7 +687,7 @@ deliberately designed not to block that path:
   interface lands, only those templates would need to change, not the SiteConfig
   API or operator.
 - Likewise, [Group Config Refs](#group-config-refs) exposes
-  `configRefs` / `tuningConfigRefs` as plain ConfigMap name lists
+  `machineConfigRefs` / `tuningConfigRefs` as plain ConfigMap name lists
   rather than typed NodePool or MachineConfigPool references, so they
   stay usable if ACM's unified interface changes how those configs
   are targeted.

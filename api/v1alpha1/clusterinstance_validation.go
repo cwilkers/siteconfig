@@ -35,6 +35,11 @@ import (
 
 const maxK8sNameLength = 253
 const maxGenerationLength = maxK8sNameLength - 100
+const maxGroupNameLength = 63
+
+// groupNameRegex matches a DNS-1123 label, the same pattern enforced by the
+// NodeSpec.group and NodeGroupSpec.name CRD markers.
+var groupNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // OperationType represents the type of node operation
 type OperationType string
@@ -141,6 +146,9 @@ var (
 		"/pruneManifests",
 		"/clusterImageSetNameRef",
 		"/holdInstallation", // Allow toggling HoldInstallation (only true→false is valid, enforced in webhook)
+		"/groups/*/paused",  // Allow pausing/unpausing a group on a live cluster
+		"/groups/*/extraLabels",
+		"/groups/*/extraAnnotations",
 	}
 
 	// Node-level path patterns (always allowed)
@@ -179,9 +187,23 @@ func ValidateClusterInstance(clusterInstance *ClusterInstance) error {
 		return fmt.Errorf("missing cluster-level template reference")
 	}
 
-	// Ensure each node has a template reference.
+	// Validate group definitions and node-to-group references.
+	if err := validateGroupReferences(clusterInstance); err != nil {
+		return fmt.Errorf("invalid group definition(s): %w", err)
+	}
+
+	// Ensure each node has an effective template reference, taking any
+	// group-inherited templateRefs into account.
+	groupIndex, err := clusterInstance.Spec.groupIndex()
+	if err != nil {
+		return fmt.Errorf("invalid group definition(s): %w", err)
+	}
 	for _, node := range clusterInstance.Spec.Nodes {
-		if len(node.TemplateRefs) == 0 {
+		var groupSpec *GroupNodeSpec
+		if group := groupIndex[node.Group]; group != nil {
+			groupSpec = &group.NodeSpec
+		}
+		if len(node.EffectiveTemplateRefs(groupSpec)) == 0 {
 			return fmt.Errorf("missing node-level template reference for node %q", node.HostName)
 		}
 	}
@@ -194,6 +216,72 @@ func ValidateClusterInstance(clusterInstance *ClusterInstance) error {
 	// Validate control-plane agent count.
 	if err := validateControlPlaneAgentCount(clusterInstance); err != nil {
 		return fmt.Errorf("control-plane agent validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// groupIndex returns a map of group name to group spec. It returns an error
+// when a group name is empty or a name is defined more than once.
+func (spec *ClusterInstanceSpec) groupIndex() (map[string]*NodeGroupSpec, error) {
+	if len(spec.Groups) == 0 {
+		return nil, nil
+	}
+
+	index := make(map[string]*NodeGroupSpec, len(spec.Groups))
+	for i := range spec.Groups {
+		group := &spec.Groups[i]
+		if group.Name == "" {
+			return nil, errors.New("group name cannot be empty")
+		}
+		if _, exists := index[group.Name]; exists {
+			return nil, fmt.Errorf("duplicate group name %q", group.Name)
+		}
+		index[group.Name] = group
+	}
+	return index, nil
+}
+
+// validateGroupReferences ensures that group definitions and node-to-group
+// references are well formed: names are unique DNS-1123 labels, every
+// nodes[].group matches a defined group, every group has at least one member
+// node, and groupTemplateRefs entries are complete.
+func validateGroupReferences(clusterInstance *ClusterInstance) error {
+	index, err := clusterInstance.Spec.groupIndex()
+	if err != nil {
+		return err
+	}
+
+	for name, group := range index {
+		if len(name) > maxGroupNameLength {
+			return fmt.Errorf("group name %q is too long (%d chars, max allowed: %d)",
+				name, len(name), maxGroupNameLength)
+		}
+		if !groupNameRegex.MatchString(name) {
+			return fmt.Errorf("group name %q is invalid: must match regex %q", name, groupNameRegex.String())
+		}
+		for _, ref := range group.GroupTemplateRefs {
+			if ref.Name == "" || ref.Namespace == "" {
+				return fmt.Errorf("group %q groupTemplateRefs entries must specify both name and namespace", name)
+			}
+		}
+	}
+
+	memberCounts := make(map[string]int, len(index))
+	for _, node := range clusterInstance.Spec.Nodes {
+		if node.Group == "" {
+			continue
+		}
+		if _, exists := index[node.Group]; !exists {
+			return fmt.Errorf("node %q references unknown group %q", node.HostName, node.Group)
+		}
+		memberCounts[node.Group]++
+	}
+
+	for name := range index {
+		if memberCounts[name] == 0 {
+			return fmt.Errorf("group %q has no member nodes", name)
+		}
 	}
 
 	return nil
@@ -841,15 +929,40 @@ func validateClusterInstanceJSONFields(clusterInstance *ClusterInstance) error {
 		}
 	}
 
+	for _, group := range clusterInstance.Spec.Groups {
+		if !isValidJSON(group.NodeSpec.InstallerArgs) {
+			return fmt.Errorf("installerArgs is not a valid JSON-formatted string [Group: Name=%s]", group.Name)
+		}
+
+		if !isValidJSON(group.NodeSpec.IgnitionConfigOverride) {
+			return fmt.Errorf(
+				"node-level ignitionConfigOverride is not a valid JSON-formatted string [Group: Name=%s]",
+				group.Name,
+			)
+		}
+	}
+
 	return nil // Validation succeeded
 }
 
 // validateControlPlaneAgentCount ensures that the number of control-plane nodes is valid.
+// Roles are counted per effective node role, so a role supplied by a node's
+// group overrides an unset node role.
 func validateControlPlaneAgentCount(clusterInstance *ClusterInstance) error {
+	groupIndex, err := clusterInstance.Spec.groupIndex()
+	if err != nil {
+		return err
+	}
+
 	controlPlaneCount := 0
 	arbiterCount := 0
 	for _, node := range clusterInstance.Spec.Nodes {
-		switch node.Role {
+		var groupSpec *GroupNodeSpec
+		if group := groupIndex[node.Group]; group != nil {
+			groupSpec = &group.NodeSpec
+		}
+		role := EffectiveNodeSpec(groupSpec, node).Role
+		switch role {
 		case "master":
 			controlPlaneCount++
 		case "arbiter":

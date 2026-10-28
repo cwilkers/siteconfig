@@ -420,6 +420,17 @@ spec:
   name: "{{ .SpecialVars.CurrentNode.HostName }}"`, kind)
 }
 
+func GetMockBasicGroupTemplate(kind string) string {
+	return fmt.Sprintf(`apiVersion: test.io/v1
+kind: %s
+metadata:
+  name: "{{ .SpecialVars.GroupName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+spec:
+  name: "{{ .SpecialVars.GroupName }}"
+  nodeCount: {{ .SpecialVars.NodeCount }}`, kind)
+}
+
 func SetupTestResources(ctx context.Context, c client.Client, testParams *TestParams) {
 	gomega.Expect(c.Create(ctx, testParams.GeneratePullSecret())).To(gomega.Succeed())
 	gomega.Expect(c.Create(ctx, testParams.GenerateBMCSecret())).To(gomega.Succeed())

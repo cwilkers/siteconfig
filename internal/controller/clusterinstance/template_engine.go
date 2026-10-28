@@ -39,6 +39,17 @@ const (
 
 type TemplateEngine struct{}
 
+// renderScope identifies the scope a set of templates renders in. The cluster
+// is always set; exactly one of node or group may also be set. When node is
+// set it holds the node's merged (effective) NodeSpec, so group-inherited
+// values are already applied. When group is set the scope is the group itself
+// and templates render once per group.
+type renderScope struct {
+	cluster *v1alpha1.ClusterInstance
+	node    *v1alpha1.NodeSpec
+	group   *v1alpha1.NodeGroupSpec
+}
+
 func NewTemplateEngine() *TemplateEngine {
 	return &TemplateEngine{}
 }
@@ -56,7 +67,7 @@ func (te *TemplateEngine) ProcessTemplates(
 	log.Info("Started processing cluster-level install templates")
 
 	// Render cluster-level install templates
-	clusterObjects, err := te.renderTemplates(ctx, c, log, &clusterInstance, nil)
+	clusterObjects, err := te.renderTemplates(ctx, c, log, renderScope{cluster: &clusterInstance})
 	if err != nil {
 		log.Error("Encountered error while processing cluster-level install templates", zap.Error(err))
 		return renderedObjects, err
@@ -67,14 +78,48 @@ func (te *TemplateEngine) ProcessTemplates(
 	}
 	log.Info("Finished processing cluster-level install templates")
 
-	// Process node-level install templates
+	// Process group-level install templates
+	numGroups := len(clusterInstance.Spec.Groups)
+	for groupId, group := range clusterInstance.Spec.Groups {
+		log.Sugar().Infof("Started processing group-level install templates [group: %d of %d]", groupId+1, numGroups)
+		groupCopy := group
+
+		// Render group-level templates
+		groupObjects, err := te.renderTemplates(ctx, c, log, renderScope{
+			cluster: &clusterInstance,
+			group:   &groupCopy,
+		})
+		if err != nil {
+			log.Sugar().Errorf(
+				"Encountered error while processing group-level install templates [group: %d of %d], err: %v",
+				groupId+1, numGroups, err)
+			return renderedObjects, err
+		}
+
+		if err := renderedObjects.AddObjects(groupObjects); err != nil {
+			return renderedObjects, err
+		}
+
+		log.Sugar().Infof("Finished processing group-level install templates [group: %d of %d]", groupId+1, numGroups)
+	}
+
+	// Process node-level install templates. Every node renders with its
+	// effective spec: group-inherited values merged in and rendering defaults
+	// applied.
 	numNodes := len(clusterInstance.Spec.Nodes)
 	for nodeId, node := range clusterInstance.Spec.Nodes {
 		log.Sugar().Infof("Started processing node-level install templates [node: %d of %d]", nodeId+1, numNodes)
-		nodeCopy := node
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+			groupSpec = &group.NodeSpec
+		}
+		nodeCopy := v1alpha1.EffectiveNodeSpec(groupSpec, node)
 
 		// Render node-level templates
-		nodeObjects, err := te.renderTemplates(ctx, c, log, &clusterInstance, &nodeCopy)
+		nodeObjects, err := te.renderTemplates(ctx, c, log, renderScope{
+			cluster: &clusterInstance,
+			node:    &nodeCopy,
+		})
 		if err != nil {
 			log.Sugar().Errorf(
 				"Encountered error while processing node-level install templates [node: %d of %d], err: %v",
@@ -96,8 +141,7 @@ func (te *TemplateEngine) renderTemplates(
 	ctx context.Context,
 	c client.Client,
 	log *zap.Logger,
-	clusterInstance *v1alpha1.ClusterInstance,
-	node *v1alpha1.NodeSpec,
+	scope renderScope,
 ) ([]RenderedObject, error) {
 
 	var (
@@ -105,13 +149,17 @@ func (te *TemplateEngine) renderTemplates(
 		templateRefs    []v1alpha1.TemplateRef
 	)
 
-	// Determine whether templateRefs are cluster-based or node-based
-	if node == nil {
+	// Determine which templateRefs apply to this render scope
+	switch {
+	case scope.node != nil:
+		// use node-level values (merged with any group nodeSpec values)
+		templateRefs = scope.node.TemplateRefs
+	case scope.group != nil:
+		// use group-level values
+		templateRefs = scope.group.GroupTemplateRefs
+	default:
 		// use cluster-level values
-		templateRefs = clusterInstance.Spec.TemplateRefs
-	} else {
-		// use node-level values
-		templateRefs = node.TemplateRefs
+		templateRefs = scope.cluster.Spec.TemplateRefs
 	}
 
 	log = log.Named("renderTemplates")
@@ -135,8 +183,7 @@ func (te *TemplateEngine) renderTemplates(
 				ctx,
 				c,
 				log,
-				clusterInstance,
-				node,
+				scope,
 				templateRef.Name,
 				templateKey,
 				template)
@@ -150,29 +197,48 @@ func (te *TemplateEngine) renderTemplates(
 }
 
 func appendAnnotationsAndLabels(
-	clusterInstance *v1alpha1.ClusterInstance,
-	node *v1alpha1.NodeSpec,
+	scope renderScope,
 	manifest map[string]interface{},
 	kind string,
 ) map[string]interface{} {
-	if node == nil {
-		// Append cluster-level user provided extra annotations if exist
-		if extraManifestAnnotations, ok := clusterInstance.Spec.ExtraAnnotationSearch(kind); ok {
-			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
-		}
-
-		// Append cluster-level user provided extra labels if exist
-		if extraManifestLabels, ok := clusterInstance.Spec.ExtraLabelSearch(kind); ok {
-			manifest = appendManifestLabels(extraManifestLabels, manifest)
-		}
-	} else {
+	switch {
+	case scope.node != nil:
 		// Append node-level user provided extra annotations if exist
-		if extraManifestAnnotations, ok := node.ExtraAnnotationSearch(kind, &clusterInstance.Spec); ok {
+		if extraManifestAnnotations, ok := scope.node.ExtraAnnotationSearch(kind, &scope.cluster.Spec); ok {
 			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
 		}
 
 		// Append node-level user provided extra labels if exist
-		if extraManifestLabels, ok := node.ExtraLabelSearch(kind, &clusterInstance.Spec); ok {
+		if extraManifestLabels, ok := scope.node.ExtraLabelSearch(kind, &scope.cluster.Spec); ok {
+			manifest = appendManifestLabels(extraManifestLabels, manifest)
+		}
+	case scope.group != nil:
+		// Append group-level user provided extra annotations if exist. The
+		// group is applied before the cluster so that, on a key collision,
+		// the group value wins; values already in the template are never
+		// overwritten.
+		if extraManifestAnnotations, ok := scope.group.ExtraAnnotations[kind]; ok {
+			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
+		}
+		if extraManifestAnnotations, ok := scope.cluster.Spec.ExtraAnnotationSearch(kind); ok {
+			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
+		}
+
+		// Append group-level user provided extra labels if exist
+		if extraManifestLabels, ok := scope.group.ExtraLabels[kind]; ok {
+			manifest = appendManifestLabels(extraManifestLabels, manifest)
+		}
+		if extraManifestLabels, ok := scope.cluster.Spec.ExtraLabelSearch(kind); ok {
+			manifest = appendManifestLabels(extraManifestLabels, manifest)
+		}
+	default:
+		// Append cluster-level user provided extra annotations if exist
+		if extraManifestAnnotations, ok := scope.cluster.Spec.ExtraAnnotationSearch(kind); ok {
+			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
+		}
+
+		// Append cluster-level user provided extra labels if exist
+		if extraManifestLabels, ok := scope.cluster.Spec.ExtraLabelSearch(kind); ok {
 			manifest = appendManifestLabels(extraManifestLabels, manifest)
 		}
 	}
@@ -183,8 +249,7 @@ func (te *TemplateEngine) renderManifestFromTemplate(
 	ctx context.Context,
 	c client.Client,
 	log *zap.Logger,
-	clusterInstance *v1alpha1.ClusterInstance,
-	node *v1alpha1.NodeSpec,
+	scope renderScope,
 	templateRefName, templateKey, template string,
 ) (RenderedObject, error) {
 
@@ -192,7 +257,7 @@ func (te *TemplateEngine) renderManifestFromTemplate(
 
 	log = log.Named("renderManifestFromTemplate")
 
-	clusterData, err := buildClusterData(ctx, c, clusterInstance, node)
+	clusterData, err := buildClusterData(ctx, c, scope)
 	if err != nil {
 		log.Error("Failed to build ClusterInstance data", zap.Error(err))
 		return object, err
@@ -220,13 +285,15 @@ func (te *TemplateEngine) renderManifestFromTemplate(
 	// Default action is to render the manifest
 	object.action = actionRender
 
-	// Determine if manifest should be pruned or suppressed
+	// Determine if manifest should be pruned or suppressed. Group-scope
+	// rendering only consults the cluster-level lists; node-scope rendering
+	// uses the merged node lists so group-inherited entries apply.
 	suppressManifestLogMsg := fmt.Sprintf("Suppressed manifest %s", GetResourceId(name, namespace, kind))
-	pruneList := clusterInstance.Spec.PruneManifests
-	suppressManifestsList := clusterInstance.Spec.SuppressedManifests
-	if node != nil {
-		pruneList = append(pruneList, node.PruneManifests...)
-		suppressManifestsList = append(suppressManifestsList, node.SuppressedManifests...)
+	pruneList := scope.cluster.Spec.PruneManifests
+	suppressManifestsList := scope.cluster.Spec.SuppressedManifests
+	if scope.node != nil {
+		pruneList = append(pruneList, scope.node.PruneManifests...)
+		suppressManifestsList = append(suppressManifestsList, scope.node.SuppressedManifests...)
 	}
 	if pruneManifest(v1alpha1.ResourceRef{APIVersion: apiVersion, Kind: kind}, pruneList) {
 		object.action = actionPrune
@@ -240,11 +307,11 @@ func (te *TemplateEngine) renderManifestFromTemplate(
 	}
 
 	// Append Annotations and Labels to rendered manifest
-	updatedManifest := appendAnnotationsAndLabels(clusterInstance, node, object.GetObject().Object, kind)
+	updatedManifest := appendAnnotationsAndLabels(scope, object.GetObject().Object, kind)
 
 	// Add owned-by label
 	updatedManifest = appendManifestLabels(map[string]string{
-		OwnedByLabel: GenerateOwnedByLabelValue(clusterInstance.Namespace, clusterInstance.Name),
+		OwnedByLabel: GenerateOwnedByLabelValue(scope.cluster.Namespace, scope.cluster.Name),
 	}, updatedManifest)
 
 	// Update the rendered object with the labels and annotations applied above

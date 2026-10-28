@@ -95,13 +95,33 @@ func validateTemplateRefs(ctx context.Context, c client.Client, clusterInstance 
 		}
 	}
 
+	// Verify that the group-level TemplateRefs exist
+	for _, group := range clusterInstance.Spec.Groups {
+		for _, templateRef := range group.GroupTemplateRefs {
+			key := types.NamespacedName{Name: templateRef.Name, Namespace: templateRef.Namespace}
+			cm := &corev1.ConfigMap{}
+			if err := c.Get(ctx, key, cm); err != nil {
+				return fmt.Errorf("failed to validate group-level TemplateRef: [%s in namespace %s] [Group: Name=%s], err: %w",
+					key.Name, key.Namespace, group.Name, err)
+			}
+		}
+	}
+
 	for _, node := range clusterInstance.Spec.Nodes {
-		// Check the ref templates are defined
-		if len(node.TemplateRefs) < 1 {
+		// Check the effective template refs are defined, taking any
+		// group-inherited templateRefs into account
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if node.Group != "" {
+			if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+				groupSpec = &group.NodeSpec
+			}
+		}
+		effectiveTemplateRefs := node.EffectiveTemplateRefs(groupSpec)
+		if len(effectiveTemplateRefs) < 1 {
 			return fmt.Errorf("missing node-level template refs [Node: Hostname=%s]", node.HostName)
 		}
-		// Verify that the node-level TemplateRefs exist
-		for _, templateRef := range node.TemplateRefs {
+		// Verify that the effective node-level TemplateRefs exist
+		for _, templateRef := range effectiveTemplateRefs {
 			key := types.NamespacedName{Name: templateRef.Name, Namespace: templateRef.Namespace}
 			cm := &corev1.ConfigMap{}
 			if err := c.Get(ctx, key, cm); err != nil {
