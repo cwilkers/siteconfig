@@ -249,6 +249,318 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              groups:
+                description: |-
+                  groups defines optional node groups. Nodes reference a group by setting
+                  nodes[].group to the group's name. Shareable node configuration lives in
+                  groups[].nodeSpec and is merged into each member node with the precedence
+                  nodes[] > groups[].nodeSpec > .spec: scalar fields resolve to the most
+                  specific scope that sets them, maps are unioned by key with the node
+                  value winning on collision, and lists are unioned (group entries first).
+                  The group render loop is a no-op when groups is unset.
+                items:
+                  description: |-
+                    NodeGroupSpec defines a named group of nodes that share common configuration.
+                    Nodes reference a group by setting nodes[].group to the group's name.
+                  properties:
+                    extraAnnotations:
+                      additionalProperties:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      description: |-
+                        extraAnnotations specifies additional annotations keyed by the Kind of
+                        resources rendered from this group's groupTemplateRefs (e.g.,
+                        "NodePool": {"example.com/owner": "platform"}). On a key collision the
+                        group value wins over cluster-level extraAnnotations. Annotations
+                        already defined in the template take precedence and are not overwritten.
+                      type: object
+                    extraLabels:
+                      additionalProperties:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      description: |-
+                        extraLabels specifies additional labels keyed by the Kind of resources
+                        rendered from this group's groupTemplateRefs (e.g.,
+                        "InfraEnv": {"tier": "compute"}). On a key collision the group value
+                        wins over cluster-level extraLabels. Labels already defined in the
+                        template take precedence and are not overwritten.
+                      type: object
+                    groupTemplateRefs:
+                      description: |-
+                        groupTemplateRefs is a list of references to group-level templates.
+                        Group-level templates are instantiated once per group, keyed by the
+                        group name.
+                      items:
+                        description: |-
+                          TemplateRef is a reference to an installation Custom Resource (CR) template.
+                          It provides a way to specify the template to be used for an installation process.
+                        properties:
+                          name:
+                            description: Name specifies the name of the referenced
+                              object.
+                            minLength: 1
+                            type: string
+                          namespace:
+                            description: Namespace specifies the namespace of the
+                              referenced object.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      type: array
+                    machineConfigRefs:
+                      description: |-
+                        machineConfigRefs is a list of ConfigMap names exposed to the group's
+                        templates as .SpecialVars.MachineConfigRefs. The operator treats the
+                        entries as opaque names.
+                      items:
+                        type: string
+                      type: array
+                    name:
+                      description: |-
+                        name identifies the group. It must be unique within the ClusterInstance
+                        and is referenced by nodes[].group.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    nodeSpec:
+                      description: |-
+                        nodeSpec holds node configuration shared by the group's member nodes.
+                        Member nodes override these values; see the ClusterInstanceSpec.groups
+                        field for the merge precedence. Identity fields (hostName, bmcAddress,
+                        bootMACAddress, bmcCredentialsName, hostRef, nodeNetwork) are not
+                        accepted here and must be set on each node.
+                      properties:
+                        automatedCleaningMode:
+                          default: disabled
+                          description: |-
+                            When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
+                            Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
+                            the disk. The default value is disabled.
+                          enum:
+                          - metadata
+                          - disabled
+                          type: string
+                        bootMode:
+                          default: UEFI
+                          description: |-
+                            bootMode selects the method of initializing the hardware during boot.
+                            Defaults to UEFI.
+                          enum:
+                          - UEFI
+                          - UEFISecureBoot
+                          - legacy
+                          type: string
+                        cpuArchitecture:
+                          description: |-
+                            CPUArchitecture is the software architecture of the group's member nodes.
+                            If it is not defined here then it is inherited from the ClusterInstanceSpec.
+                          enum:
+                          - x86_64
+                          - aarch64
+                          type: string
+                        extraAnnotations:
+                          additionalProperties:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          description: |-
+                            extraAnnotations specifies additional annotations keyed by the Kubernetes
+                            resource Kind (e.g., "BareMetalHost", "NMStateConfig") for the group's
+                            member nodes. On a key collision the node value wins.
+                          type: object
+                        extraLabels:
+                          additionalProperties:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          description: |-
+                            extraLabels specifies additional labels keyed by the Kubernetes resource
+                            Kind (e.g., "BareMetalHost", "NMStateConfig") for the group's member
+                            nodes. On a key collision the node value wins.
+                          type: object
+                        ignitionConfigOverride:
+                          description: |-
+                            ignitionConfigOverride is a JSON-formatted string containing
+                            host-specific Ignition config overrides. Rendered as the
+                            bmac.agent-install.openshift.io/ignition-config-overrides annotation
+                            on the BareMetalHost resource. Must be valid JSON when provided.
+                          type: string
+                        installerArgs:
+                          description: |-
+                            installerArgs is a JSON-formatted string of arguments passed to the
+                            coreos-installer via the bare metal agent controller. Rendered as the
+                            bmac.agent-install.openshift.io/installer-args annotation on the
+                            BareMetalHost resource. Must be valid JSON when provided.
+                          type: string
+                        ironicInspect:
+                          default: ""
+                          description: |-
+                            ironicInspect controls automatic hardware introspection performed by
+                            Ironic during BareMetalHost registration. The default empty string
+                            enables inspection. Set to "disabled" to skip hardware inspection.
+                          enum:
+                          - ""
+                          - disabled
+                          type: string
+                        nodeLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            NodeLabels allows the specification of custom roles for the group's member
+                            nodes in your managed clusters.
+                          type: object
+                        pruneManifests:
+                          description: |-
+                            pruneManifests is a list of resource references (apiVersion + kind)
+                            identifying manifests that should be skipped during rendering and
+                            deleted from the cluster if previously applied, for the group's member
+                            nodes. Combined with cluster-level and node-level pruneManifests.
+                          items:
+                            description: ResourceRef represents the API version and
+                              kind of a Kubernetes resource
+                            properties:
+                              apiVersion:
+                                description: |-
+                                  APIVersion is the version of the Kubernetes API to use when interacting
+                                  with the resource. It includes both the API group and the version, such
+                                  as "v1" for core resources or "apps/v1" for deployments.
+                                type: string
+                              kind:
+                                description: Kind is the type of Kubernetes resource
+                                  being referenced.
+                                type: string
+                            required:
+                            - apiVersion
+                            - kind
+                            type: object
+                          type: array
+                        role:
+                          default: master
+                          description: |-
+                            role specifies the role of the group's member nodes in the cluster.
+                            Defaults to "master".
+                          enum:
+                          - master
+                          - worker
+                          - arbiter
+                          type: string
+                        rootDeviceHints:
+                          description: |-
+                            RootDeviceHints specifies the device for deployment.
+                            Identifiers that are stable across reboots are recommended, for example, wwn: <disk_wwn> or
+                            deviceName: /dev/disk/by-path/<device_path>
+                          properties:
+                            deviceName:
+                              description: |-
+                                A Linux device name like "/dev/vda", or a by-path link to it like
+                                "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0". The hint must match
+                                the actual value exactly.
+                              type: string
+                            hctl:
+                              description: |-
+                                A SCSI bus address like 0:0:0:0. The hint must match the actual
+                                value exactly.
+                              type: string
+                            minSizeGigabytes:
+                              description: The minimum size of the device in Gigabytes.
+                              minimum: 0
+                              type: integer
+                            model:
+                              description: |-
+                                A vendor-specific device identifier. The hint can be a
+                                substring of the actual value.
+                              type: string
+                            rotational:
+                              description: True if the device should use spinning
+                                media, false otherwise.
+                              type: boolean
+                            serialNumber:
+                              description: |-
+                                Device serial number. The hint must match the actual value
+                                exactly.
+                              type: string
+                            vendor:
+                              description: |-
+                                The name of the vendor or manufacturer of the device. The hint
+                                can be a substring of the actual value.
+                              type: string
+                            wwn:
+                              description: |-
+                                Unique storage identifier. The hint must match the actual value
+                                exactly.
+                              type: string
+                            wwnVendorExtension:
+                              description: |-
+                                Unique vendor storage identifier. The hint must match the
+                                actual value exactly.
+                              type: string
+                            wwnWithExtension:
+                              description: |-
+                                Unique storage identifier with the vendor extension
+                                appended. The hint must match the actual value exactly.
+                              type: string
+                          type: object
+                        suppressedManifests:
+                          description: |-
+                            suppressedManifests is a list of Kubernetes resource Kinds to exclude
+                            from rendering for the group's member nodes. Combined with cluster-level
+                            and node-level suppressedManifests.
+                          items:
+                            type: string
+                          type: array
+                        templateRefs:
+                          description: |-
+                            TemplateRefs is a list of references to node-level templates inherited
+                            by the group's member nodes. A node may omit its own templateRefs when
+                            the group supplies them; when both are set they are unioned with the
+                            group entries first.
+                          items:
+                            description: |-
+                              TemplateRef is a reference to an installation Custom Resource (CR) template.
+                              It provides a way to specify the template to be used for an installation process.
+                            properties:
+                              name:
+                                description: Name specifies the name of the referenced
+                                  object.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace specifies the namespace of
+                                  the referenced object.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - namespace
+                            type: object
+                          type: array
+                      type: object
+                    paused:
+                      default: false
+                      description: |-
+                        paused pauses reconciliation of the group's rendered objects when true.
+                        It is exposed to group templates as .SpecialVars.GroupPaused; the operator
+                        itself does not interpret it.
+                      type: boolean
+                    tuningConfigRefs:
+                      description: |-
+                        tuningConfigRefs is a list of ConfigMap names exposed to the group's
+                        templates as .SpecialVars.TuningConfigRefs. The operator treats the
+                        entries as opaque names.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - name
+                  type: object
+                maxItems: 100
+                type: array
               holdInstallation:
                 default: false
                 description: |-
@@ -400,6 +712,12 @@ spec:
                         extraLabels. Labels already defined in the template take precedence
                         and are not overwritten.
                       type: object
+                    group:
+                      description: group is the name of the group (spec.groups[].name)
+                        this node belongs to.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
                     hostName:
                       description: Hostname is the desired hostname for the host
                       type: string
@@ -597,6 +915,10 @@ spec:
                         TemplateRefs is a list of references to node-level templates. A node-level template consists of a ConfigMap
                         in which the keys of the data field represent the kind of the installation manifest(s).
                         Node-level templates are instantiated once for each node in the ClusterInstance CR.
+                        A node that references a group (see the group field) may omit templateRefs when
+                        the group's nodeSpec.templateRefs supplies them; when both are set they are unioned.
+                        Admission rejects any node whose effective templateRefs (its own unioned with
+                        its group's) are empty.
                       items:
                         description: |-
                           TemplateRef is a reference to an installation Custom Resource (CR) template.
@@ -622,7 +944,6 @@ spec:
                   - bmcCredentialsName
                   - bootMACAddress
                   - hostName
-                  - templateRefs
                   type: object
                 type: array
               platformType:

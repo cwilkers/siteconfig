@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -1426,5 +1428,314 @@ var _ = Describe("determineSpecChangePermission", func() {
 			result := determineSpecChangePermission(oldClusterInstance, newClusterInstance)
 			Expect(result).To(Equal(SpecChangeBlocked))
 		})
+	})
+})
+
+var _ = Describe("validateGroupReferences", func() {
+	var clusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		clusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+					},
+					{
+						HostName:     "node2",
+						Group:        "workers",
+						TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+					},
+					{
+						HostName:     "node3",
+						Group:        "storage",
+						TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+					},
+				},
+				Groups: []NodeGroupSpec{
+					{Name: "workers"},
+					{Name: "storage"},
+				},
+			},
+		}
+	})
+
+	It("accepts valid group definitions and references", func() {
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("rejects duplicate group names", func() {
+		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: "workers"})
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("duplicate group"))
+	})
+
+	It("rejects a node referencing an unknown group", func() {
+		clusterInstance.Spec.Nodes[2].Group = "missing"
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unknown group"))
+	})
+
+	It("rejects a node group reference when no groups are defined", func() {
+		clusterInstance.Spec.Groups = nil
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unknown group"))
+	})
+
+	It("rejects a group with no member nodes", func() {
+		clusterInstance.Spec.Nodes = clusterInstance.Spec.Nodes[:2]
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no member nodes"))
+	})
+
+	It("rejects an empty group name", func() {
+		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: ""})
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("group name cannot be empty"))
+	})
+
+	It("rejects a group name that is too long", func() {
+		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups,
+			NodeGroupSpec{Name: strings.Repeat("a", 64)})
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("too long"))
+	})
+
+	It("rejects a group name with invalid characters", func() {
+		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: "Invalid_Group"})
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid"))
+	})
+
+	It("rejects a groupTemplateRefs entry missing a name", func() {
+		clusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{{Namespace: "default"}}
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("groupTemplateRefs"))
+	})
+
+	It("rejects a groupTemplateRefs entry missing a namespace", func() {
+		clusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{{Name: "group-template"}}
+		err := validateGroupReferences(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("groupTemplateRefs"))
+	})
+})
+
+var _ = Describe("ValidateClusterInstance with groups", func() {
+	var clusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		clusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{HostName: "node1", Group: "workers"},
+					{HostName: "node2", Group: "workers"},
+				},
+				Groups: []NodeGroupSpec{
+					{
+						Name: "workers",
+						NodeSpec: GroupNodeSpec{
+							Role: "worker",
+							TemplateRefs: []TemplateRef{
+								{Name: "grouped-node-template", Namespace: "default"},
+							},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	It("accepts a node without templateRefs when the group supplies them", func() {
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("rejects a node without templateRefs when no group supplies them", func() {
+		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "node3"})
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("missing node-level template reference"))
+	})
+
+	It("rejects an HCP cluster where a group supplies the master role", func() {
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		clusterInstance.Spec.Groups[0].NodeSpec.Role = "master"
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("hosted control plane clusters must not have control-plane agents"))
+	})
+
+	It("accepts an HCP cluster where all nodes are workers via groups", func() {
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("counts the group role over a defaulted node role for control-plane agents", func() {
+		// A HighlyAvailable cluster whose only node defaults to master but whose
+		// group supplies worker needs another control-plane source to be valid.
+		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailable
+		clusterInstance.Spec.Nodes[0].Role = "master"
+		clusterInstance.Spec.Nodes[1].Role = "master"
+
+		By("rejecting when the group turns every node into a worker")
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("at least 1 control-plane agent is required"))
+
+		By("accepting when one node keeps an explicit control-plane role")
+		clusterInstance.Spec.Nodes[1].Group = ""
+		clusterInstance.Spec.Nodes[1].Role = "master"
+		clusterInstance.Spec.Nodes[1].TemplateRefs = []TemplateRef{
+			{Name: "node-template", Namespace: "default"},
+		}
+		err = ValidateClusterInstance(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("lets a node explicitly override the group role", func() {
+		// The group supplies master while every member node explicitly sets
+		// worker (a non-default value); the node value must win, otherwise
+		// this HCP cluster would have control-plane agents.
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		clusterInstance.Spec.Groups[0].NodeSpec.Role = "master"
+		clusterInstance.Spec.Nodes[0].Role = "worker"
+		clusterInstance.Spec.Nodes[1].Role = "worker"
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+})
+
+var _ = Describe("day-N changes with groups", func() {
+	var (
+		oldClusterInstance, newClusterInstance *ClusterInstance
+		testLogger                             logr.Logger
+	)
+
+	BeforeEach(func() {
+		testLogger = logf.Log.WithName("test")
+
+		oldClusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+					},
+				},
+				Groups: []NodeGroupSpec{
+					{
+						Name:              "workers",
+						Paused:            false,
+						MachineConfigRefs: []string{"worker-machineconfig"},
+						NodeSpec: GroupNodeSpec{
+							Role: "worker",
+							TemplateRefs: []TemplateRef{
+								{Name: "grouped-node-template", Namespace: "default"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		newClusterInstance = oldClusterInstance.DeepCopy()
+	})
+
+	It("allows toggling groups[].paused after provisioning completes", func() {
+		newClusterInstance.Spec.Groups[0].Paused = true
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("allows updating groups[].extraLabels and groups[].extraAnnotations", func() {
+		newClusterInstance.Spec.Groups[0].ExtraLabels = map[string]map[string]string{
+			"NodePool": {"tier": "compute"},
+		}
+		newClusterInstance.Spec.Groups[0].ExtraAnnotations = map[string]map[string]string{
+			"NodePool": {"example.com/owner": "platform"},
+		}
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("rejects changing groups[].machineConfigRefs after provisioning completes", func() {
+		newClusterInstance.Spec.Groups[0].MachineConfigRefs = []string{"other-machineconfig"}
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unauthorized changes in immutable fields: /groups/0/machineConfigRefs"))
+	})
+
+	It("rejects changing nodes[].group after provisioning completes", func() {
+		newClusterInstance.Spec.Nodes[0].Group = "other"
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unauthorized change to /group"))
+	})
+})
+
+var _ = Describe("validateClusterInstanceJSONFields with groups", func() {
+	var clusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		clusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						Group:        "workers",
+						TemplateRefs: []TemplateRef{{Name: "grouped-node-template", Namespace: "default"}},
+					},
+				},
+				Groups: []NodeGroupSpec{
+					{
+						Name:     "workers",
+						NodeSpec: GroupNodeSpec{Role: "worker"},
+					},
+				},
+				ClusterType: ClusterTypeHostedControlPlane,
+			},
+		}
+	})
+
+	It("accepts valid JSON in group nodeSpec fields", func() {
+		clusterInstance.Spec.Groups[0].NodeSpec.InstallerArgs = `["--append-karg", "nameserver=192.0.2.1"]`
+		clusterInstance.Spec.Groups[0].NodeSpec.IgnitionConfigOverride = `{"storage":{"files":[]}}`
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("rejects invalid JSON in groups[].nodeSpec.installerArgs", func() {
+		clusterInstance.Spec.Groups[0].NodeSpec.InstallerArgs = "{invalid"
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("installerArgs is not a valid JSON-formatted string"))
+		Expect(err.Error()).To(ContainSubstring("workers"))
+	})
+
+	It("rejects invalid JSON in groups[].nodeSpec.ignitionConfigOverride", func() {
+		clusterInstance.Spec.Groups[0].NodeSpec.IgnitionConfigOverride = "{invalid"
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("ignitionConfigOverride is not a valid JSON-formatted string"))
+		Expect(err.Error()).To(ContainSubstring("workers"))
 	})
 })
