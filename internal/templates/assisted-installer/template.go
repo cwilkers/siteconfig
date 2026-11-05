@@ -17,8 +17,12 @@ package assistedinstaller
 
 // Default assisted installer install template names
 const (
-	ClusterLevelInstallTemplates = "ai-cluster-templates-v1"
-	NodeLevelInstallTemplates    = "ai-node-templates-v1"
+	ClusterLevelInstallTemplates     = "ai-cluster-templates-v1"
+	NodeLevelInstallTemplates        = "ai-node-templates-v1"
+	GroupLevelInstallTemplates       = "ai-group-templates-v1"
+	GroupedNodeLevelInstallTemplates = "ai-grouped-node-templates-v1"
+	// GroupLabelKey labels Agents so a group can be identified by label.
+	GroupLabelKey = "siteconfig.open-cluster-management.io/group"
 )
 
 /*
@@ -268,6 +272,123 @@ spec:
 {{ .SpecialVars.CurrentNode.RootDeviceHints | toYaml | indent 4 }}
 {{ end }}`
 
+/*
+  Group-level installation templates
+*/
+
+const GroupInfraEnv = `apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  annotations:
+    siteconfig.open-cluster-management.io/sync-wave: "1"
+  name: "{{ .SpecialVars.GroupName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+spec:
+  clusterRef:
+    name: "{{ .Spec.ClusterName }}"
+    namespace: "{{ .Spec.ClusterName }}"
+  sshAuthorizedKey: "{{ .Spec.SSHPublicKey }}"
+{{ if .Spec.Proxy }}
+  proxy:
+{{ .Spec.Proxy | toYaml | indent 4 }}
+{{ end }}
+{{ if and
+    (.Spec.CPUArchitecture)
+    (ne .Spec.CPUArchitecture "multi")
+}}
+  cpuArchitecture: "{{ .Spec.CPUArchitecture }}"
+{{ end }}
+  agentLabels:
+    siteconfig.open-cluster-management.io/group: "{{ .SpecialVars.GroupName }}"
+  pullSecretRef:
+    name: "{{ .Spec.PullSecretRef.Name }}"
+  ignitionConfigOverride: '{{ .Spec.IgnitionConfigOverride }}'
+  nmStateConfigLabelSelector:
+    matchLabels:
+      nmstate-label: "{{ .Spec.ClusterName }}-{{ .SpecialVars.GroupName }}"
+{{ if .Spec.AdditionalNTPSources }}
+  additionalNTPSources:
+{{ .Spec.AdditionalNTPSources | toYaml | indent 4 }}
+{{ end }}`
+
+/*
+  Grouped-node installation templates
+*/
+
+const GroupedNodeBareMetalHost = `apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+{{ if .SpecialVars.CurrentNode.HostRef }}
+  name: "{{ .SpecialVars.CurrentNode.HostRef.Name }}"
+  namespace: "{{ .SpecialVars.CurrentNode.HostRef.Namespace }}"
+{{ else }}
+  name: "{{ .SpecialVars.CurrentNode.HostName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+{{ end }}
+  annotations:
+    siteconfig.open-cluster-management.io/sync-wave: "3"
+    inspect.metal3.io: "{{ .SpecialVars.CurrentNode.IronicInspect }}"
+{{ if .SpecialVars.CurrentNode.NodeLabels }}
+{{ range $key, $value := .SpecialVars.CurrentNode.NodeLabels }}
+    bmac.agent-install.openshift.io.node-label.{{ $key }}: {{ $value | quote}}
+{{ end }}
+{{ end }}
+    bmac.agent-install.openshift.io/hostname: "{{ .SpecialVars.CurrentNode.HostName }}"
+{{ if .SpecialVars.CurrentNode.InstallerArgs  }}
+    bmac.agent-install.openshift.io/installer-args: '{{ .SpecialVars.CurrentNode.InstallerArgs  }}'
+{{ end }}
+{{ if .SpecialVars.CurrentNode.IgnitionConfigOverride }}
+    bmac.agent-install.openshift.io/ignition-config-overrides: '{{ .SpecialVars.CurrentNode.IgnitionConfigOverride }}'
+{{ end }}
+    bmac.agent-install.openshift.io/role: "{{ .SpecialVars.CurrentNode.Role }}"
+  labels:
+    infraenvs.agent-install.openshift.io: "{{ .SpecialVars.GroupName }}"
+    siteconfig.open-cluster-management.io/group: "{{ .SpecialVars.GroupName }}"
+    cluster.open-cluster-management.io/backup: cluster-activation
+spec:
+  bootMode: "{{ .SpecialVars.CurrentNode.BootMode }}"
+  bmc:
+    address: "{{ .SpecialVars.CurrentNode.BmcAddress }}"
+    disableCertificateVerification: true
+    credentialsName: "{{ .SpecialVars.CurrentNode.BmcCredentialsName.Name }}"
+  bootMACAddress: "{{ .SpecialVars.CurrentNode.BootMACAddress }}"
+  automatedCleaningMode: "{{ .SpecialVars.CurrentNode.AutomatedCleaningMode }}"
+  online: true
+{{ if .SpecialVars.CurrentNode.CPUArchitecture }}
+  architecture: "{{ .SpecialVars.CurrentNode.CPUArchitecture }}"
+{{ else if and
+    (.Spec.CPUArchitecture)
+    (ne .Spec.CPUArchitecture "multi")
+}}
+  architecture: "{{ .Spec.CPUArchitecture }}"
+{{ end }}
+{{ if .SpecialVars.CurrentNode.RootDeviceHints }}
+  rootDeviceHints:
+{{ .SpecialVars.CurrentNode.RootDeviceHints | toYaml | indent 4 }}
+{{ end }}`
+
+const GroupedNodeNMStateConfig = `{{ if .SpecialVars.CurrentNode.NodeNetwork }}
+apiVersion: agent-install.openshift.io/v1beta1
+kind: NMStateConfig
+metadata:
+  annotations:
+    siteconfig.open-cluster-management.io/sync-wave: "1"
+{{ if .SpecialVars.CurrentNode.HostRef }}
+  name: "{{ .SpecialVars.CurrentNode.HostRef.Name }}"
+  namespace: "{{ .SpecialVars.CurrentNode.HostRef.Namespace }}"
+{{ else }}
+  name: "{{ .SpecialVars.CurrentNode.HostName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+{{ end }}
+  labels:
+    nmstate-label: "{{ .Spec.ClusterName }}-{{ .SpecialVars.GroupName }}"
+spec:
+  config:
+{{ .SpecialVars.CurrentNode.NodeNetwork.NetConfig | toYaml | indent 4}}
+  interfaces:
+{{ .SpecialVars.CurrentNode.NodeNetwork.Interfaces | toYaml | indent 4 }}
+{{ end }}`
+
 func GetClusterTemplates() map[string]string {
 	data := make(map[string]string)
 	data["AgentClusterInstall"] = AgentClusterInstall
@@ -282,5 +403,18 @@ func GetNodeTemplates() map[string]string {
 	data["InfraEnv"] = InfraEnv
 	data["BareMetalHost"] = BareMetalHost
 	data["NMStateConfig"] = NMStateConfig
+	return data
+}
+
+func GetGroupTemplates() map[string]string {
+	data := make(map[string]string)
+	data["GroupInfraEnv"] = GroupInfraEnv
+	return data
+}
+
+func GetGroupedNodeTemplates() map[string]string {
+	data := make(map[string]string)
+	data["GroupedNodeBareMetalHost"] = GroupedNodeBareMetalHost
+	data["GroupedNodeNMStateConfig"] = GroupedNodeNMStateConfig
 	return data
 }

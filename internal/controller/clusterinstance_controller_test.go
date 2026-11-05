@@ -3818,6 +3818,74 @@ var _ = Describe("applyACMBackupLabelToInstallTemplates", func() {
 				"install template ConfigMap %s should have the ACM backup label", name)
 		}
 	})
+
+	It("applies the ACM backup label to group and grouped-node templates by family", func() {
+		exemptNames := []string{
+			ai_templates.GroupLevelInstallTemplates,
+			ai_templates.GroupedNodeLevelInstallTemplates,
+		}
+		labeledNames := []string{
+			hcp_templates.GroupLevelInstallTemplates,
+			hcp_templates.GroupedNodeLevelInstallTemplates,
+		}
+
+		groupRefs := []v1alpha1.TemplateRef{
+			{Name: ai_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: hcp_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+		}
+		// Grouped-node template refs come from the group's nodeSpec, not the node.
+		groupedNodeRefs := []v1alpha1.TemplateRef{
+			{Name: ai_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: hcp_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+		}
+
+		clusterInstance := &v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      TestClusterInstanceName,
+				Namespace: TestClusterInstanceNamespace,
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				Groups: []v1alpha1.NodeGroupSpec{
+					{
+						Name:              "workers",
+						GroupTemplateRefs: groupRefs,
+						NodeSpec: v1alpha1.GroupNodeSpec{
+							TemplateRefs: groupedNodeRefs,
+						},
+					},
+				},
+				Nodes: []v1alpha1.NodeSpec{
+					{HostName: TestNode1Hostname, Group: "workers"},
+				},
+			},
+		}
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+
+		for _, ref := range append(append([]v1alpha1.TemplateRef{}, groupRefs...), groupedNodeRefs...) {
+			Expect(c.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+				Data:       map[string]string{"foo": "bar"},
+			})).To(Succeed())
+		}
+
+		Expect(r.applyACMBackupLabelToInstallTemplates(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		for _, name := range exemptNames {
+			cm := &corev1.ConfigMap{}
+			key := types.NamespacedName{Name: name, Namespace: siteConfigNamespace}
+			Expect(c.Get(ctx, key, cm)).To(Succeed())
+			Expect(cm.GetLabels()).ToNot(HaveKey(acmBackupLabel),
+				"install template ConfigMap %s should not have the ACM backup label", name)
+		}
+
+		for _, name := range labeledNames {
+			cm := &corev1.ConfigMap{}
+			key := types.NamespacedName{Name: name, Namespace: siteConfigNamespace}
+			Expect(c.Get(ctx, key, cm)).To(Succeed())
+			Expect(cm.GetLabels()).To(HaveKeyWithValue(acmBackupLabel, acmBackupLabelValue),
+				"install template ConfigMap %s should have the ACM backup label", name)
+		}
+	})
 })
 
 var _ = Describe("renderManifests with built-in templates", func() {

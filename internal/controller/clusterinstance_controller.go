@@ -379,6 +379,7 @@ func (r *ClusterInstanceReconciler) applyACMBackupLabelToInstallTemplates(
 
 	defaultInstallTemplates := []string{
 		ai_templates.ClusterLevelInstallTemplates, ai_templates.NodeLevelInstallTemplates,
+		ai_templates.GroupLevelInstallTemplates, ai_templates.GroupedNodeLevelInstallTemplates,
 		ibi_templates.ClusterLevelInstallTemplates, ibi_templates.NodeLevelInstallTemplates,
 	}
 
@@ -436,9 +437,22 @@ func (r *ClusterInstanceReconciler) applyACMBackupLabelToInstallTemplates(
 		return err
 	}
 
-	// Process node-level install templates
+	// Process group-level install templates
+	for _, group := range clusterInstance.Spec.Groups {
+		if err := applyDRLabelToTemplatesFn(group.GroupTemplateRefs); err != nil {
+			return err
+		}
+	}
+
+	// Process node-level install templates using the effective, group-merged
+	// template refs so group-supplied refs are covered too.
 	for _, node := range clusterInstance.Spec.Nodes {
-		if err := applyDRLabelToTemplatesFn(node.TemplateRefs); err != nil {
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+			groupSpec = &group.NodeSpec
+		}
+		effectiveRefs := v1alpha1.EffectiveNodeSpec(groupSpec, node).TemplateRefs
+		if err := applyDRLabelToTemplatesFn(effectiveRefs); err != nil {
 			return err
 		}
 	}

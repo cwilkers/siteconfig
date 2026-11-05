@@ -34,6 +34,7 @@ import (
 	"github.com/stolostron/siteconfig/internal/controller"
 	"github.com/stolostron/siteconfig/internal/controller/configuration"
 	ai_templates "github.com/stolostron/siteconfig/internal/templates/assisted-installer"
+	hcp_templates "github.com/stolostron/siteconfig/internal/templates/hosted-cluster"
 	ibi_templates "github.com/stolostron/siteconfig/internal/templates/image-based-installer"
 )
 
@@ -100,6 +101,26 @@ var _ = Describe("initConfigMapTemplates", func() {
 			Namespace: testNamespace,
 		}
 		Expect(c.Get(ctx, key, cm)).To(Succeed())
+	})
+
+	It("creates the group and grouped-node template ConfigMaps on initialization", func() {
+		err := initConfigMapTemplates(ctx, c, testNamespace, testLogger)
+		Expect(err).ToNot(HaveOccurred())
+
+		expected := map[string]map[string]string{
+			hcp_templates.GroupLevelInstallTemplates:       hcp_templates.GetGroupTemplates(),
+			hcp_templates.GroupedNodeLevelInstallTemplates: hcp_templates.GetGroupedNodeTemplates(),
+			ai_templates.GroupLevelInstallTemplates:        ai_templates.GetGroupTemplates(),
+			ai_templates.GroupedNodeLevelInstallTemplates:  ai_templates.GetGroupedNodeTemplates(),
+		}
+		for name, data := range expected {
+			cm := &corev1.ConfigMap{}
+			key := types.NamespacedName{Name: name, Namespace: testNamespace}
+			Expect(c.Get(ctx, key, cm)).To(Succeed())
+			Expect(cm.Data).To(Equal(data))
+			Expect(cm.Immutable).ToNot(BeNil())
+			Expect(*cm.Immutable).To(BeTrue())
+		}
 	})
 
 	It("should not throw an error if a ConfigMap template already exists", func() {

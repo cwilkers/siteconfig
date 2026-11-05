@@ -345,13 +345,17 @@ func deleteConfigMap(ctx context.Context, c client.Client, namespace, name strin
 // initConfigMapTemplates initializes default ConfigMaps consisting of the Assisted Installer and Image-based Installer
 // installation templates in the specified namespace.
 func initConfigMapTemplates(ctx context.Context, c client.Client, namespace string, log *zap.Logger) error {
-	templates := make(map[string]map[string]string, 6)
+	templates := make(map[string]map[string]string, 10)
 	templates[ai_templates.ClusterLevelInstallTemplates] = ai_templates.GetClusterTemplates()
 	templates[ai_templates.NodeLevelInstallTemplates] = ai_templates.GetNodeTemplates()
+	templates[ai_templates.GroupLevelInstallTemplates] = ai_templates.GetGroupTemplates()
+	templates[ai_templates.GroupedNodeLevelInstallTemplates] = ai_templates.GetGroupedNodeTemplates()
 	templates[ibi_templates.ClusterLevelInstallTemplates] = ibi_templates.GetClusterTemplates()
 	templates[ibi_templates.NodeLevelInstallTemplates] = ibi_templates.GetNodeTemplates()
 	templates[hcp_templates.ClusterLevelInstallTemplates] = hcp_templates.GetClusterTemplates()
 	templates[hcp_templates.NodeLevelInstallTemplates] = hcp_templates.GetNodeTemplates()
+	templates[hcp_templates.GroupLevelInstallTemplates] = hcp_templates.GetGroupTemplates()
+	templates[hcp_templates.GroupedNodeLevelInstallTemplates] = hcp_templates.GetGroupedNodeTemplates()
 
 	for k, v := range templates {
 		immutable := true
