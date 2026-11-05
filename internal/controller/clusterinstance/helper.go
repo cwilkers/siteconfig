@@ -169,17 +169,16 @@ func buildClusterData(
 	}
 
 	// Determine the number of control-plane, worker, and arbiter agents,
-	// counting each node by its effective (group-merged) role
+	// counting each node by its effective (group-merged and defaulted) role
 	controlPlaneAgents := 0
 	workerAgents := 0
 	arbiterAgents := 0
 	for _, node := range clusterInstance.Spec.Nodes {
-		role := node.Role
-		if node.Group != "" {
-			if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
-				role = v1alpha1.MergeNodeSpec(&group.NodeSpec, node).Role
-			}
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+			groupSpec = &group.NodeSpec
 		}
+		role := v1alpha1.EffectiveNodeSpec(groupSpec, node).Role
 		switch role {
 		case "master":
 			controlPlaneAgents++

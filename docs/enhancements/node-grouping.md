@@ -536,12 +536,13 @@ ConfigMaps as HCP does.
 
 1. **One group per node:** A node MUST reference at most one group.
 
-2. **CRD defaulting trap:** `NodeSpec.role` defaults to `master` via
-   `+kubebuilder:default`. The merge implementation MUST distinguish
-   "user wrote `role: master`" from "CRD defaulted `role` to `master`"
-   so that `groups[].nodeSpec.role: worker` is not blocked by a node's
-   defaulted value. Use user-specified / raw field detection, not the
-   post-defaulted Go struct.
+2. **Defaults are applied after the merge:** `NodeSpec.role`, `bootMode`, and
+   `automatedCleaningMode` MUST NOT carry a `+kubebuilder:default`. A CRD
+   default is persisted on create, so a defaulted node value cannot be
+   distinguished from one the user authored, and it would shadow
+   `groups[].nodeSpec` during the merge. The rendering defaults (`master`,
+   `UEFI`, `disabled`) MUST instead be applied after the merge, only to
+   fields left unset at both the node and group scope.
 
 3. **IBI group templates:** IBI has no need of grouping because it is a SNO
    case. We SHOULD NOT ship an `ibi-group-templates-v1` ConfigMap.
@@ -567,7 +568,8 @@ ConfigMaps as HCP does.
 - Merge logic for all field types (union, scalar, nested), reading
   shareable node fields from `groups[].nodeSpec`
 - Validation of group references and constraints
-- CRD default detection (role, bootMode) during merge
+- Post-merge defaulting of role, bootMode, and automatedCleaningMode, and
+  explicit node values taking precedence over group values and defaults
 - Mixed grouped/ungrouped node rendering
 - `.SpecialVars.GroupPaused` correctly reflects `groups[].paused`
   during group-template rendering, and is absent/false by default

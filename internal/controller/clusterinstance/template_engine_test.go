@@ -1067,6 +1067,47 @@ var _ = Describe("ProcessTemplates rendered objects", func() {
 			Expect(object.GetLabels()).To(HaveKeyWithValue(OwnedByLabel, ownedBy))
 		}
 	})
+
+	It("renders ungrouped nodes with the defaulted role, boot mode and cleaning mode", func() {
+		Expect(c.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-defaults", Namespace: clusterName},
+			Data: map[string]string{"NodeDefaults": `apiVersion: test.io/v1
+kind: NodeDefaults
+metadata:
+  name: "{{ .SpecialVars.CurrentNode.HostName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+spec:
+  role: "{{ .SpecialVars.CurrentNode.Role }}"
+  bootMode: "{{ .SpecialVars.CurrentNode.BootMode }}"
+  automatedCleaningMode: "{{ .SpecialVars.CurrentNode.AutomatedCleaningMode }}"
+  ironicInspect: "{{ .SpecialVars.CurrentNode.IronicInspect }}"`},
+		})).To(Succeed())
+
+		// The node omits role, bootMode and automatedCleaningMode, so the
+		// rendering defaults must be applied without relying on CRD defaulting.
+		instance.Spec.Nodes = []v1alpha1.NodeSpec{{
+			HostName:           "node-1",
+			BmcAddress:         "192.0.2.1",
+			BmcCredentialsName: v1alpha1.BmcCredentialsName{Name: "bmc-secret"},
+			BootMACAddress:     "00:00:5E:00:53:00",
+			TemplateRefs:       []v1alpha1.TemplateRef{{Name: "node-defaults", Namespace: clusterName}},
+		}}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, instance)
+		Expect(err).ToNot(HaveOccurred())
+
+		var defaults map[string]interface{}
+		for _, object := range rendered.GetRenderObjects() {
+			if object.GetKind() == "NodeDefaults" {
+				defaults, _, err = unstructured.NestedMap(object.GetObject().Object, "spec")
+				Expect(err).ToNot(HaveOccurred())
+			}
+		}
+		Expect(defaults).To(HaveKeyWithValue("role", "master"))
+		Expect(defaults).To(HaveKeyWithValue("bootMode", "UEFI"))
+		Expect(defaults).To(HaveKeyWithValue("automatedCleaningMode", "disabled"))
+		Expect(defaults).To(HaveKeyWithValue("ironicInspect", ""))
+	})
 })
 
 var _ = Describe("ProcessTemplates with groups", func() {
@@ -1190,6 +1231,107 @@ var _ = Describe("ProcessTemplates with groups", func() {
 			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node1"},
 			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node2"},
 		))
+	})
+
+	It("renders grouped nodes with inherited values and rendering defaults", func() {
+		nodeTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
+			Data: map[string]string{"NodeDefaults": `apiVersion: test.io/v1
+kind: NodeDefaults
+metadata:
+  name: "{{ .SpecialVars.CurrentNode.HostName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+spec:
+  role: "{{ .SpecialVars.CurrentNode.Role }}"
+  bootMode: "{{ .SpecialVars.CurrentNode.BootMode }}"
+  automatedCleaningMode: "{{ .SpecialVars.CurrentNode.AutomatedCleaningMode }}"`},
+		}
+		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+		// The group sets only the role and template refs; bootMode and
+		// automatedCleaningMode are left for the rendering defaults.
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "workers"},
+		}
+		TestClusterInstance.Spec.Groups[0].NodeSpec.Role = "worker"
+		TestClusterInstance.Spec.Groups[0].NodeSpec.TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "node-level", Namespace: "test"},
+		}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		nodeSpecs := make(map[string]map[string]interface{})
+		for _, object := range rendered.GetRenderObjects() {
+			if object.GetKind() == "NodeDefaults" {
+				spec, _, specErr := unstructured.NestedMap(object.GetObject().Object, "spec")
+				Expect(specErr).ToNot(HaveOccurred())
+				nodeSpecs[object.GetName()] = spec
+			}
+		}
+		Expect(nodeSpecs).To(HaveLen(2))
+		for _, spec := range nodeSpecs {
+			Expect(spec).To(HaveKeyWithValue("role", "worker"))
+			Expect(spec).To(HaveKeyWithValue("bootMode", "UEFI"))
+			Expect(spec).To(HaveKeyWithValue("automatedCleaningMode", "disabled"))
+		}
+	})
+
+	It("applies the same rendering defaults to grouped and ungrouped nodes", func() {
+		nodeTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-defaults", Namespace: "test"},
+			Data: map[string]string{"NodeDefaults": `apiVersion: test.io/v1
+kind: NodeDefaults
+metadata:
+  name: "{{ .SpecialVars.CurrentNode.HostName }}"
+  namespace: "{{ .Spec.ClusterName }}"
+spec:
+  role: "{{ .SpecialVars.CurrentNode.Role }}"
+  bootMode: "{{ .SpecialVars.CurrentNode.BootMode }}"
+  automatedCleaningMode: "{{ .SpecialVars.CurrentNode.AutomatedCleaningMode }}"
+  ironicInspect: "{{ .SpecialVars.CurrentNode.IronicInspect }}"`},
+		}
+		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+		// The group sets only the role and template refs. The grouped node
+		// inherits the role; the ungrouped node omits it. Both must reach the
+		// same rendering defaults for the remaining fields, and sharing the
+		// cluster with a group must not leak into the ungrouped node.
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "workers"},
+		}
+		TestClusterInstance.Spec.Groups[0].NodeSpec.Role = "worker"
+		TestClusterInstance.Spec.Groups[0].NodeSpec.TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "node-defaults", Namespace: "test"},
+		}
+		TestClusterInstance.Spec.Nodes = []v1alpha1.NodeSpec{
+			{HostName: "grouped", Group: "workers"},
+			{
+				HostName:     "ungrouped",
+				TemplateRefs: []v1alpha1.TemplateRef{{Name: "node-defaults", Namespace: "test"}},
+			},
+		}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		nodeSpecs := make(map[string]map[string]interface{})
+		for _, object := range rendered.GetRenderObjects() {
+			if object.GetKind() == "NodeDefaults" {
+				spec, _, specErr := unstructured.NestedMap(object.GetObject().Object, "spec")
+				Expect(specErr).ToNot(HaveOccurred())
+				nodeSpecs[object.GetName()] = spec
+			}
+		}
+		Expect(nodeSpecs).To(HaveLen(2))
+		Expect(nodeSpecs["grouped"]).To(HaveKeyWithValue("role", "worker"))
+		Expect(nodeSpecs["ungrouped"]).To(HaveKeyWithValue("role", "master"))
+
+		for name, spec := range nodeSpecs {
+			Expect(spec).To(HaveKeyWithValue("bootMode", "UEFI"), name)
+			Expect(spec).To(HaveKeyWithValue("automatedCleaningMode", "disabled"), name)
+			Expect(spec).To(HaveKeyWithValue("ironicInspect", ""), name)
+		}
 	})
 
 	It("applies group extraLabels only to group-rendered objects", func() {

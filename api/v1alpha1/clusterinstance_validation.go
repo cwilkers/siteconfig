@@ -947,7 +947,7 @@ func validateClusterInstanceJSONFields(clusterInstance *ClusterInstance) error {
 
 // validateControlPlaneAgentCount ensures that the number of control-plane nodes is valid.
 // Roles are counted per effective node role, so a role supplied by a node's
-// group overrides a defaulted node role.
+// group overrides an unset node role.
 func validateControlPlaneAgentCount(clusterInstance *ClusterInstance) error {
 	groupIndex, err := clusterInstance.Spec.groupIndex()
 	if err != nil {
@@ -957,10 +957,11 @@ func validateControlPlaneAgentCount(clusterInstance *ClusterInstance) error {
 	controlPlaneCount := 0
 	arbiterCount := 0
 	for _, node := range clusterInstance.Spec.Nodes {
-		role := node.Role
+		var groupSpec *GroupNodeSpec
 		if group := groupIndex[node.Group]; group != nil {
-			role = MergeNodeSpec(&group.NodeSpec, node).Role
+			groupSpec = &group.NodeSpec
 		}
+		role := EffectiveNodeSpec(groupSpec, node).Role
 		switch role {
 		case "master":
 			controlPlaneCount++

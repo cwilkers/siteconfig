@@ -447,17 +447,18 @@ func Test_buildClusterData_with_groups(t *testing.T) {
 		Spec:       hivev1.ClusterImageSetSpec{ReleaseImage: "test-image"},
 	}
 
-	// two grouped nodes with the CRD-defaulted role ("master") so the
-	// group-supplied worker role applies, plus one ungrouped master node
+	// Two grouped nodes that omit the role (they inherit worker from the
+	// group) plus one ungrouped node that also omits the role, so it takes
+	// the master rendering default.
 	clusterInstance := &v1alpha1.ClusterInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-cluster"},
 		Spec: v1alpha1.ClusterInstanceSpec{
 			ClusterImageSetNameRef: "test-clusterimageset",
 			NetworkType:            "OVNKubernetes",
 			Nodes: []v1alpha1.NodeSpec{
-				{HostName: "node1", Group: "workers", Role: "master"},
-				{HostName: "node2", Group: "workers", Role: "master"},
-				{HostName: "node3", Role: "master"},
+				{HostName: "node1", Group: "workers"},
+				{HostName: "node2", Group: "workers"},
+				{HostName: "node3"},
 			},
 			Groups: []v1alpha1.NodeGroupSpec{
 				{
@@ -541,6 +542,40 @@ func Test_buildClusterData_with_groups(t *testing.T) {
 			assert.Equal(t, tc.expected, actual.SpecialVars)
 		})
 	}
+}
+
+func Test_buildClusterData_counts_explicit_node_role_over_group(t *testing.T) {
+	clusterImageSet := &hivev1.ClusterImageSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-clusterimageset"},
+		Spec:       hivev1.ClusterImageSetSpec{ReleaseImage: "test-image"},
+	}
+
+	clusterInstance := &v1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-cluster"},
+		Spec: v1alpha1.ClusterInstanceSpec{
+			ClusterImageSetNameRef: "test-clusterimageset",
+			Nodes: []v1alpha1.NodeSpec{
+				{HostName: "node1", Group: "workers", Role: "master"},
+				{HostName: "node2", Group: "workers"},
+			},
+			Groups: []v1alpha1.NodeGroupSpec{
+				{Name: "workers", NodeSpec: v1alpha1.GroupNodeSpec{Role: "worker"}},
+			},
+		},
+	}
+
+	testScheme := scheme.Scheme
+	schemeErr := hivev1.AddToScheme(testScheme)
+	assert.NoError(t, schemeErr)
+	c := fakeclient.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(clusterImageSet).
+		Build()
+
+	data, err := buildClusterData(context.Background(), c, renderScope{cluster: clusterInstance})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, data.SpecialVars.ControlPlaneAgents)
+	assert.Equal(t, 1, data.SpecialVars.WorkerAgents)
 }
 
 func TestPruneManifest(t *testing.T) {

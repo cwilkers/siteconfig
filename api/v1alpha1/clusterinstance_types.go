@@ -179,9 +179,8 @@ type NodeSpec struct {
 
 	// When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
 	// Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
-	// the disk. The default value is disabled.
+	// the disk. Defaults to disabled when rendering the node.
 	// +optional
-	// +kubebuilder:default:=disabled
 	AutomatedCleaningMode bmh_v1alpha1.AutomatedCleaningMode `json:"automatedCleaningMode,omitempty"`
 
 	// RootDeviceHints specifies the device for deployment.
@@ -218,8 +217,7 @@ type NodeSpec struct {
 	CPUArchitecture CPUArchitecture `json:"cpuArchitecture,omitempty"`
 
 	// bootMode selects the method of initializing the hardware during boot.
-	// Defaults to UEFI.
-	// +kubebuilder:default:=UEFI
+	// Defaults to UEFI when rendering the node.
 	// +optional
 	BootMode bmh_v1alpha1.BootMode `json:"bootMode,omitempty"`
 
@@ -237,9 +235,9 @@ type NodeSpec struct {
 	// +optional
 	IgnitionConfigOverride string `json:"ignitionConfigOverride,omitempty"`
 
-	// role specifies the role of this node in the cluster. Defaults to "master".
+	// role specifies the role of this node in the cluster. Defaults to "master"
+	// when rendering the node.
 	// +kubebuilder:validation:Enum=master;worker;arbiter
-	// +kubebuilder:default:=master
 	// +optional
 	Role string `json:"role,omitempty"`
 
@@ -283,7 +281,6 @@ type NodeSpec struct {
 	// ironicInspect controls automatic hardware introspection performed by
 	// Ironic during BareMetalHost registration. The default empty string
 	// enables inspection. Set to "disabled" to skip hardware inspection.
-	// +kubebuilder:default:=""
 	// +optional
 	IronicInspect IronicInspect `json:"ironicInspect,omitempty"`
 
@@ -369,9 +366,8 @@ type NodeGroupSpec struct {
 // defined on a group and inherited by its member nodes.
 type GroupNodeSpec struct {
 	// role specifies the role of the group's member nodes in the cluster.
-	// Defaults to "master".
+	// Defaults to "master" when rendering the node.
 	// +kubebuilder:validation:Enum=master;worker;arbiter
-	// +kubebuilder:default:=master
 	// +optional
 	Role string `json:"role,omitempty"`
 
@@ -382,16 +378,14 @@ type GroupNodeSpec struct {
 	CPUArchitecture CPUArchitecture `json:"cpuArchitecture,omitempty"`
 
 	// bootMode selects the method of initializing the hardware during boot.
-	// Defaults to UEFI.
-	// +kubebuilder:default:=UEFI
+	// Defaults to UEFI when rendering the node.
 	// +optional
 	BootMode bmh_v1alpha1.BootMode `json:"bootMode,omitempty"`
 
 	// When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
 	// Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
-	// the disk. The default value is disabled.
+	// the disk. Defaults to disabled when rendering the node.
 	// +optional
-	// +kubebuilder:default:=disabled
 	AutomatedCleaningMode bmh_v1alpha1.AutomatedCleaningMode `json:"automatedCleaningMode,omitempty"`
 
 	// RootDeviceHints specifies the device for deployment.
@@ -403,7 +397,6 @@ type GroupNodeSpec struct {
 	// ironicInspect controls automatic hardware introspection performed by
 	// Ironic during BareMetalHost registration. The default empty string
 	// enables inspection. Set to "disabled" to skip hardware inspection.
-	// +kubebuilder:default:=""
 	// +optional
 	IronicInspect IronicInspect `json:"ironicInspect,omitempty"`
 

@@ -30,12 +30,10 @@ import (
 // fields (hostName, bmcAddress, bootMACAddress, bmcCredentialsName, hostRef,
 // nodeNetwork, group) are always taken from the node.
 //
-// Because the API server persists CRD defaults, a node value that equals its
-// CRD default cannot be distinguished from a defaulted one; when the group
-// supplies a different value, a defaulted node value is treated as
-// unspecified. A node that explicitly wants the default value while its group
-// wants something else must be moved out of the group or use a custom
-// template.
+// MergeNodeSpec does not apply defaults: an unset field stays unset so that
+// an explicit value at a more specific scope is distinguishable from an
+// omitted one. Use EffectiveNodeSpec to obtain the fully resolved spec used
+// for rendering and validation.
 func MergeNodeSpec(group *GroupNodeSpec, node NodeSpec) NodeSpec {
 	if group == nil {
 		return node
@@ -43,17 +41,15 @@ func MergeNodeSpec(group *GroupNodeSpec, node NodeSpec) NodeSpec {
 
 	merged := node
 
-	merged.Role = mergeScalar("role", node.Role, group.Role)
-	merged.CPUArchitecture = CPUArchitecture(
-		mergeScalar("cpuArchitecture", string(node.CPUArchitecture), string(group.CPUArchitecture)))
-	merged.BootMode = mergeScalarCast[bmh_v1alpha1.BootMode]("bootMode", string(node.BootMode), string(group.BootMode))
+	merged.Role = mergeScalar(node.Role, group.Role)
+	merged.CPUArchitecture = mergeScalarCast[CPUArchitecture](
+		string(node.CPUArchitecture), string(group.CPUArchitecture))
+	merged.BootMode = mergeScalarCast[bmh_v1alpha1.BootMode](string(node.BootMode), string(group.BootMode))
 	merged.AutomatedCleaningMode = mergeScalarCast[bmh_v1alpha1.AutomatedCleaningMode](
-		"automatedCleaningMode", string(node.AutomatedCleaningMode), string(group.AutomatedCleaningMode))
-	merged.IronicInspect = mergeScalarCast[IronicInspect](
-		"ironicInspect", string(node.IronicInspect), string(group.IronicInspect))
-	merged.InstallerArgs = mergeScalar("installerArgs", node.InstallerArgs, group.InstallerArgs)
-	merged.IgnitionConfigOverride = mergeScalar(
-		"ignitionConfigOverride", node.IgnitionConfigOverride, group.IgnitionConfigOverride)
+		string(node.AutomatedCleaningMode), string(group.AutomatedCleaningMode))
+	merged.IronicInspect = mergeScalarCast[IronicInspect](string(node.IronicInspect), string(group.IronicInspect))
+	merged.InstallerArgs = mergeScalar(node.InstallerArgs, group.InstallerArgs)
+	merged.IgnitionConfigOverride = mergeScalar(node.IgnitionConfigOverride, group.IgnitionConfigOverride)
 
 	if node.RootDeviceHints == nil {
 		merged.RootDeviceHints = group.RootDeviceHints
@@ -100,41 +96,41 @@ func (n NodeSpec) EffectiveTemplateRefs(group *GroupNodeSpec) []TemplateRef {
 	return unionTemplateRefs(group.TemplateRefs, n.TemplateRefs)
 }
 
-// crdDefaultedScalars maps the shareable scalar NodeSpec fields that carry a
-// +kubebuilder:default marker to their default values. The API server
-// persists these defaults, so a Go struct value equal to the default is
-// indistinguishable from an explicitly written one.
-var crdDefaultedScalars = map[string]string{
-	"role":                  "master",
-	"bootMode":              "UEFI",
-	"automatedCleaningMode": "disabled",
-	"ironicInspect":         "",
+// ApplyNodeSpecDefaults sets the rendering defaults for NodeSpec fields that
+// remain unset after group merging.
+func ApplyNodeSpecDefaults(node NodeSpec) NodeSpec {
+	if node.Role == "" {
+		node.Role = "master"
+	}
+	if node.BootMode == "" {
+		node.BootMode = bmh_v1alpha1.UEFI
+	}
+	if node.AutomatedCleaningMode == "" {
+		node.AutomatedCleaningMode = bmh_v1alpha1.CleaningModeDisabled
+	}
+	return node
 }
 
-// resolvesToDefault reports whether value equals the CRD default of field.
-// Fields without a CRD default never resolve to a default.
-func resolvesToDefault(field, value string) bool {
-	def, ok := crdDefaultedScalars[field]
-	return ok && value == def
+// EffectiveNodeSpec returns the node spec after group merging and applying the
+// rendering defaults. Use it wherever the resolved configuration is consumed,
+// such as template rendering and validation.
+func EffectiveNodeSpec(group *GroupNodeSpec, node NodeSpec) NodeSpec {
+	return ApplyNodeSpecDefaults(MergeNodeSpec(group, node))
 }
 
 // mergeScalar resolves a shared scalar field with nodes[] > group precedence.
-// A node value that is unset, or that equals its CRD default while the group
-// sets a different value, is treated as unspecified so the group value wins.
-func mergeScalar(field, nodeVal, groupVal string) string {
-	if groupVal == "" || groupVal == nodeVal {
+// A field set on the node wins; an unset node field falls back to the group.
+func mergeScalar(nodeVal, groupVal string) string {
+	if nodeVal != "" {
 		return nodeVal
 	}
-	if nodeVal == "" || resolvesToDefault(field, nodeVal) {
-		return groupVal
-	}
-	return nodeVal
+	return groupVal
 }
 
 // mergeScalarCast resolves a shared scalar field whose Go type is a named
 // string type.
-func mergeScalarCast[T ~string](field, nodeVal, groupVal string) T {
-	return T(mergeScalar(field, nodeVal, groupVal))
+func mergeScalarCast[T ~string](nodeVal, groupVal string) T {
+	return T(mergeScalar(nodeVal, groupVal))
 }
 
 // unionStringMap unions two maps by key; the node value wins on collision.

@@ -1586,12 +1586,10 @@ var _ = Describe("ValidateClusterInstance with groups", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	It("counts the group role over a defaulted node role for control-plane agents", func() {
-		// A HighlyAvailable cluster whose only node defaults to master but whose
-		// group supplies worker needs another control-plane source to be valid.
+	It("counts the group role for nodes that omit a role", func() {
+		// A HighlyAvailable cluster whose nodes omit role inherits worker from
+		// the group, so it needs another control-plane source to be valid.
 		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailable
-		clusterInstance.Spec.Nodes[0].Role = "master"
-		clusterInstance.Spec.Nodes[1].Role = "master"
 
 		By("rejecting when the group turns every node into a worker")
 		err := ValidateClusterInstance(clusterInstance)
@@ -1610,14 +1608,41 @@ var _ = Describe("ValidateClusterInstance with groups", func() {
 
 	It("lets a node explicitly override the group role", func() {
 		// The group supplies master while every member node explicitly sets
-		// worker (a non-default value); the node value must win, otherwise
-		// this HCP cluster would have control-plane agents.
+		// worker; the node value must win, otherwise this HCP cluster would
+		// have control-plane agents.
 		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
 		clusterInstance.Spec.Groups[0].NodeSpec.Role = "master"
 		clusterInstance.Spec.Nodes[0].Role = "worker"
 		clusterInstance.Spec.Nodes[1].Role = "worker"
 		err := ValidateClusterInstance(clusterInstance)
 		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("counts an explicit master role over a worker group", func() {
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		clusterInstance.Spec.Nodes[0].Role = "master"
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("hosted control plane clusters must not have control-plane agents"))
+	})
+
+	It("defaults an omitted role to master for control-plane counting", func() {
+		clusterInstance.Spec.ClusterType = ClusterTypeHostedControlPlane
+		clusterInstance.Spec.Groups = nil
+		clusterInstance.Spec.Nodes = []NodeSpec{
+			{
+				HostName:     "node1",
+				Role:         "worker",
+				TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+			},
+			{
+				HostName:     "node2",
+				TemplateRefs: []TemplateRef{{Name: "node-template", Namespace: "default"}},
+			},
+		}
+		err := ValidateClusterInstance(clusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("hosted control plane clusters must not have control-plane agents"))
 	})
 })
 

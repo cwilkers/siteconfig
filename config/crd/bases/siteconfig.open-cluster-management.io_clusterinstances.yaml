@@ -337,20 +337,18 @@ spec:
                         accepted here and must be set on each node.
                       properties:
                         automatedCleaningMode:
-                          default: disabled
                           description: |-
                             When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
                             Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
-                            the disk. The default value is disabled.
+                            the disk. Defaults to disabled when rendering the node.
                           enum:
                           - metadata
                           - disabled
                           type: string
                         bootMode:
-                          default: UEFI
                           description: |-
                             bootMode selects the method of initializing the hardware during boot.
-                            Defaults to UEFI.
+                            Defaults to UEFI when rendering the node.
                           enum:
                           - UEFI
                           - UEFISecureBoot
@@ -399,7 +397,6 @@ spec:
                             BareMetalHost resource. Must be valid JSON when provided.
                           type: string
                         ironicInspect:
-                          default: ""
                           description: |-
                             ironicInspect controls automatic hardware introspection performed by
                             Ironic during BareMetalHost registration. The default empty string
@@ -441,10 +438,9 @@ spec:
                             type: object
                           type: array
                         role:
-                          default: master
                           description: |-
                             role specifies the role of the group's member nodes in the cluster.
-                            Defaults to "master".
+                            Defaults to "master" when rendering the node.
                           enum:
                           - master
                           - worker
@@ -629,11 +625,10 @@ spec:
                     and node-level template overrides.
                   properties:
                     automatedCleaningMode:
-                      default: disabled
                       description: |-
                         When set to disabled, automated cleaning will be avoided during provisioning and deprovisioning.
                         Set the value to metadata to enable the removal of the disk’s partitioning table only, without fully wiping
-                        the disk. The default value is disabled.
+                        the disk. Defaults to disabled when rendering the node.
                       enum:
                       - metadata
                       - disabled
@@ -665,10 +660,9 @@ spec:
                       pattern: '[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}'
                       type: string
                     bootMode:
-                      default: UEFI
                       description: |-
                         bootMode selects the method of initializing the hardware during boot.
-                        Defaults to UEFI.
+                        Defaults to UEFI when rendering the node.
                       enum:
                       - UEFI
                       - UEFISecureBoot
@@ -753,7 +747,6 @@ spec:
                         BareMetalHost resource. Must be valid JSON when provided.
                       type: string
                     ironicInspect:
-                      default: ""
                       description: |-
                         ironicInspect controls automatic hardware introspection performed by
                         Ironic during BareMetalHost registration. The default empty string
@@ -836,9 +829,9 @@ spec:
                         type: object
                       type: array
                     role:
-                      default: master
-                      description: role specifies the role of this node in the cluster.
-                        Defaults to "master".
+                      description: |-
+                        role specifies the role of this node in the cluster. Defaults to "master"
+                        when rendering the node.
                       enum:
                       - master
                       - worker

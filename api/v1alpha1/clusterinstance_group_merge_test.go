@@ -86,24 +86,66 @@ var _ = Describe("MergeNodeSpec", func() {
 		Expect(merged.RootDeviceHints.DeviceName).To(Equal("/dev/disk/by-path/node"))
 	})
 
-	It("treats a defaulted node role as unspecified when the group sets a role", func() {
-		node.Role = "master" // equals the CRD default
-		merged := MergeNodeSpec(group, node)
-		Expect(merged.Role).To(Equal("worker"))
+	It("resolves explicit and unspecified roles for a group with role worker", func() {
+		group := &GroupNodeSpec{Role: "worker"}
+		nodes := []NodeSpec{
+			{HostName: "explicit-master", Role: "master"},
+			{HostName: "explicit-worker", Role: "worker"},
+			{HostName: "unspecified-role"},
+		}
+
+		roles := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			roles = append(roles, MergeNodeSpec(group, node).Role)
+		}
+
+		Expect(roles).To(Equal([]string{"master", "worker", "worker"}))
 	})
 
-	It("treats a defaulted node bootMode as unspecified when the group sets a bootMode", func() {
-		node.BootMode = "UEFI" // equals the CRD default
-		group.BootMode = "UEFISecureBoot"
-		merged := MergeNodeSpec(group, node)
-		Expect(string(merged.BootMode)).To(Equal("UEFISecureBoot"))
+	It("resolves explicit and unspecified boot modes for a group with bootMode UEFISecureBoot", func() {
+		group := &GroupNodeSpec{BootMode: "UEFISecureBoot"}
+		nodes := []NodeSpec{
+			{HostName: "explicit-uefi", BootMode: "UEFI"},
+			{HostName: "explicit-legacy", BootMode: "legacy"},
+			{HostName: "unspecified-boot-mode"},
+		}
+
+		bootModes := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			bootModes = append(bootModes, string(MergeNodeSpec(group, node).BootMode))
+		}
+
+		Expect(bootModes).To(Equal([]string{"UEFI", "legacy", "UEFISecureBoot"}))
 	})
 
-	It("keeps an explicitly defaulted group role when the node is defaulted", func() {
-		node.Role = "master"
-		group.Role = "master"
-		merged := MergeNodeSpec(group, node)
-		Expect(merged.Role).To(Equal("master"))
+	It("resolves explicit and unspecified cleaning modes for a group with automatedCleaningMode metadata", func() {
+		group := &GroupNodeSpec{AutomatedCleaningMode: "metadata"}
+		nodes := []NodeSpec{
+			{HostName: "explicit-disabled", AutomatedCleaningMode: "disabled"},
+			{HostName: "unspecified-cleaning-mode"},
+		}
+
+		cleaningModes := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			cleaningModes = append(cleaningModes, string(MergeNodeSpec(group, node).AutomatedCleaningMode))
+		}
+
+		Expect(cleaningModes).To(Equal([]string{"disabled", "metadata"}))
+	})
+
+	It("resolves explicit and unspecified ironicInspect values for a group with ironicInspect disabled", func() {
+		group := &GroupNodeSpec{IronicInspect: "disabled"}
+		nodes := []NodeSpec{
+			{HostName: "explicit-disabled", IronicInspect: "disabled"},
+			{HostName: "unspecified-ironic-inspect"},
+		}
+
+		ironicInspects := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			ironicInspects = append(ironicInspects, string(MergeNodeSpec(group, node).IronicInspect))
+		}
+
+		Expect(ironicInspects).To(Equal([]string{"disabled", "disabled"}))
 	})
 
 	It("uses the group value when the node scalar is unset", func() {
@@ -269,24 +311,66 @@ var _ = Describe("group spec helpers", func() {
 	})
 })
 
-var _ = Describe("resolvesToDefault", func() {
-	It("recognizes the CRD defaults for the defaulted scalar fields", func() {
-		Expect(resolvesToDefault("role", "master")).To(BeTrue())
-		Expect(resolvesToDefault("bootMode", "UEFI")).To(BeTrue())
-		Expect(resolvesToDefault("automatedCleaningMode", "disabled")).To(BeTrue())
-		Expect(resolvesToDefault("ironicInspect", "")).To(BeTrue())
+var _ = Describe("ApplyNodeSpecDefaults", func() {
+	It("fills the rendering defaults for unset fields", func() {
+		node := NodeSpec{HostName: "node1"}
+		Expect(ApplyNodeSpecDefaults(node)).To(Equal(NodeSpec{
+			HostName:              "node1",
+			Role:                  "master",
+			BootMode:              bmh_v1alpha1.UEFI,
+			AutomatedCleaningMode: bmh_v1alpha1.CleaningModeDisabled,
+		}))
 	})
 
-	It("does not treat non-default values as defaulted", func() {
-		Expect(resolvesToDefault("role", "worker")).To(BeFalse())
-		Expect(resolvesToDefault("bootMode", "UEFISecureBoot")).To(BeFalse())
-		Expect(resolvesToDefault("automatedCleaningMode", "metadata")).To(BeFalse())
-		Expect(resolvesToDefault("ironicInspect", "enabled")).To(BeFalse())
+	It("preserves explicitly set values", func() {
+		node := NodeSpec{
+			Role:                  "worker",
+			BootMode:              bmh_v1alpha1.UEFISecureBoot,
+			AutomatedCleaningMode: bmh_v1alpha1.CleaningModeMetadata,
+			IronicInspect:         "disabled",
+		}
+		Expect(ApplyNodeSpecDefaults(node)).To(Equal(node))
 	})
 
-	It("does not treat fields without CRD defaults as defaulted", func() {
-		Expect(resolvesToDefault("cpuArchitecture", "x86_64")).To(BeFalse())
-		Expect(resolvesToDefault("installerArgs", "")).To(BeFalse())
+	It("leaves an unset ironicInspect empty, which enables inspection", func() {
+		node := ApplyNodeSpecDefaults(NodeSpec{HostName: "node1"})
+		Expect(node.IronicInspect).To(BeEmpty())
+	})
+})
+
+var _ = Describe("EffectiveNodeSpec", func() {
+	It("merges the group and applies rendering defaults", func() {
+		group := &GroupNodeSpec{Role: "worker"}
+		Expect(EffectiveNodeSpec(group, NodeSpec{HostName: "node1"})).To(Equal(NodeSpec{
+			HostName:              "node1",
+			Role:                  "worker",
+			BootMode:              bmh_v1alpha1.UEFI,
+			AutomatedCleaningMode: bmh_v1alpha1.CleaningModeDisabled,
+		}))
+	})
+
+	It("applies rendering defaults without a group", func() {
+		Expect(EffectiveNodeSpec(nil, NodeSpec{HostName: "node1"})).To(Equal(NodeSpec{
+			HostName:              "node1",
+			Role:                  "master",
+			BootMode:              bmh_v1alpha1.UEFI,
+			AutomatedCleaningMode: bmh_v1alpha1.CleaningModeDisabled,
+		}))
+	})
+
+	It("keeps explicit node values over the group and the defaults", func() {
+		group := &GroupNodeSpec{
+			Role:                  "worker",
+			BootMode:              "legacy",
+			AutomatedCleaningMode: "metadata",
+		}
+		node := NodeSpec{
+			HostName:              "node1",
+			Role:                  "master",
+			BootMode:              "UEFISecureBoot",
+			AutomatedCleaningMode: "disabled",
+		}
+		Expect(EffectiveNodeSpec(group, node)).To(Equal(node))
 	})
 })
 

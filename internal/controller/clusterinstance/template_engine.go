@@ -103,17 +103,17 @@ func (te *TemplateEngine) ProcessTemplates(
 		log.Sugar().Infof("Finished processing group-level install templates [group: %d of %d]", groupId+1, numGroups)
 	}
 
-	// Process node-level install templates. Grouped nodes render with their
-	// merged (effective) spec so that group-inherited values apply.
+	// Process node-level install templates. Every node renders with its
+	// effective spec: group-inherited values merged in and rendering defaults
+	// applied.
 	numNodes := len(clusterInstance.Spec.Nodes)
 	for nodeId, node := range clusterInstance.Spec.Nodes {
 		log.Sugar().Infof("Started processing node-level install templates [node: %d of %d]", nodeId+1, numNodes)
-		nodeCopy := node
-		if node.Group != "" {
-			if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
-				nodeCopy = v1alpha1.MergeNodeSpec(&group.NodeSpec, node)
-			}
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
+			groupSpec = &group.NodeSpec
 		}
+		nodeCopy := v1alpha1.EffectiveNodeSpec(groupSpec, node)
 
 		// Render node-level templates
 		nodeObjects, err := te.renderTemplates(ctx, c, log, renderScope{

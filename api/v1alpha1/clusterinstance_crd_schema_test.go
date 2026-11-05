@@ -78,6 +78,49 @@ var _ = Describe("ClusterInstance CRD schema", func() {
 		}
 	})
 
+	It("does not default any inheritable node field in the CRD", func() {
+		// Inheritable fields are the ones shared by nodes[] and groups[].nodeSpec.
+		// They are resolved post-merge by ApplyNodeSpecDefaults so an explicit value
+		// at a more specific scope stays distinguishable from an omitted one. A CRD
+		// default anywhere in one of these fields would be persisted by the API
+		// server and break that, so walk each field's whole schema.
+		var expectNoDefault func(schema interface{}, path string)
+		expectNoDefault = func(schema interface{}, path string) {
+			properties, ok := schema.(map[string]interface{})
+			if !ok {
+				return
+			}
+
+			Expect(properties).ToNot(HaveKey("default"), "%s must not be CRD-defaulted", path)
+
+			if nested, ok := properties["properties"].(map[string]interface{}); ok {
+				for name, child := range nested {
+					expectNoDefault(child, path+"."+name)
+				}
+			}
+			if items, ok := properties["items"]; ok {
+				expectNoDefault(items, path+"[]")
+			}
+		}
+
+		for _, crdPath := range crdPaths {
+			specProps := loadSpecProperties(crdPath)
+
+			nodeProps := specProps["nodes"].(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
+			groupProps := specProps["groups"].(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
+			groupNodeProps := groupProps["nodeSpec"].(map[string]interface{})["properties"].(map[string]interface{})
+
+			Expect(groupNodeProps).ToNot(BeEmpty())
+			for field := range groupNodeProps {
+				Expect(nodeProps).To(HaveKey(field),
+					"groups[].nodeSpec.%s must also exist on nodes[] to be inheritable", field)
+
+				expectNoDefault(nodeProps[field], "nodes[]."+field)
+				expectNoDefault(groupNodeProps[field], "groups[].nodeSpec."+field)
+			}
+		}
+	})
+
 	It("restricts groups[].nodeSpec to the shareable subset of NodeSpec", func() {
 		expected := []string{
 			"automatedCleaningMode",
