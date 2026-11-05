@@ -115,7 +115,7 @@ func TestTemplateEngineRender(t *testing.T) {
 		Build()
 	ctx := context.Background()
 
-	TestData, _ := buildClusterData(ctx, c, TestClusterInstance, &TestClusterInstance.Spec.Nodes[0])
+	TestData, _ := buildClusterData(ctx, c, renderScope{cluster: TestClusterInstance, node: &TestClusterInstance.Spec.Nodes[0]})
 
 	type args struct {
 		templateType string
@@ -352,7 +352,7 @@ var _ = Describe("renderTemplates", func() {
 	It("fails when the template reference cannot be retrieved", func() {
 		TestClusterInstance.Spec.TemplateRefs = []v1alpha1.TemplateRef{{Name: "does-not-exist", Namespace: "test"}}
 
-		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, nil)
+		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
 		Expect(err).To(HaveOccurred())
 	})
 
@@ -370,7 +370,7 @@ var _ = Describe("renderTemplates", func() {
 		Expect(c.Create(ctx, clusterTemplates)).To(Succeed())
 
 		TestClusterInstance.Spec.InstallConfigOverrides = "{foobar}"
-		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, nil)
+		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
 		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError(ContainSubstring("invalid json parameter set at installConfigOverride")))
 	})
@@ -388,7 +388,7 @@ var _ = Describe("renderTemplates", func() {
 		}
 		Expect(c.Create(ctx, clusterTemplates)).To(Succeed())
 
-		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, nil)
+		_, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
 		Expect(err).To(HaveOccurred())
 		Expect(err).To(MatchError(ContainSubstring("field doesNotExist")))
 	})
@@ -410,7 +410,7 @@ var _ = Describe("renderTemplates", func() {
 
 		TestClusterInstance.Spec.SuppressedManifests = []string{"TestA", "TestC"}
 
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, nil)
+		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(len(got)).To(Equal(2))
@@ -472,7 +472,7 @@ var _ = Describe("renderTemplates", func() {
 
 		node.SuppressedManifests = []string{"TestA", "TestC"}
 
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, node)
+		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance, node: node})
 		Expect(err).ToNot(HaveOccurred())
 
 		expected := []RenderedObject{
@@ -539,7 +539,7 @@ var _ = Describe("renderTemplates", func() {
 				"extra-labels-l2": "test",
 			},
 		}
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, nil)
+		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
 		Expect(err).ToNot(HaveOccurred())
 
 		expected := []RenderedObject{
@@ -598,7 +598,7 @@ var _ = Describe("renderTemplates", func() {
 				"extra-labels-l2": "test",
 			},
 		}
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, node)
+		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance, node: node})
 		Expect(err).ToNot(HaveOccurred())
 
 		expected := []RenderedObject{
@@ -658,7 +658,7 @@ var _ = Describe("renderTemplates", func() {
 				"extra-node-labels-l2": "test",
 			},
 		}
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, TestClusterInstance, node)
+		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance, node: node})
 		Expect(err).ToNot(HaveOccurred())
 
 		expected := []RenderedObject{
@@ -1066,5 +1066,227 @@ var _ = Describe("ProcessTemplates rendered objects", func() {
 		for _, object := range objects {
 			Expect(object.GetLabels()).To(HaveKeyWithValue(OwnedByLabel, ownedBy))
 		}
+	})
+})
+
+var _ = Describe("ProcessTemplates with groups", func() {
+	var (
+		c                   client.Client
+		ctx                 = context.Background()
+		tmplEngine          = NewTemplateEngine()
+		testLogger          = zap.NewNop().Named("Test")
+		TestClusterInstance v1alpha1.ClusterInstance
+	)
+
+	BeforeEach(func() {
+		c = fakeclient.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithStatusSubresource(&v1alpha1.ClusterInstance{}).
+			Build()
+
+		TestClusterInstance = v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "site-sno-du-1",
+				Namespace: "site-sno-du-1",
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				ClusterName: "site-sno-du-1",
+				Nodes: []v1alpha1.NodeSpec{
+					{HostName: "node1", Group: "workers"},
+					{HostName: "node2", Group: "workers"},
+				},
+				ClusterImageSetNameRef: "openshift-test",
+			},
+		}
+		Expect(c.Create(ctx, GetMockClusterImageSet("openshift-test", "test-image"))).To(Succeed())
+
+		// Every scope needs a valid cluster-level template
+		clusterTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "cluster-level", Namespace: "test"},
+			Data:       map[string]string{"Cluster": GetMockBasicClusterTemplate("Cluster")},
+		}
+		Expect(c.Create(ctx, clusterTemplates)).To(Succeed())
+		TestClusterInstance.Spec.TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "cluster-level", Namespace: "test"},
+		}
+	})
+
+	It("renders group templates once per group with group special vars", func() {
+		groupTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "group-level", Namespace: "test"},
+			Data:       map[string]string{"NodePool": GetMockBasicGroupTemplate("NodePool")},
+		}
+		Expect(c.Create(ctx, groupTemplates)).To(Succeed())
+
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "workers", GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "group-level", Namespace: "test"}}},
+			{
+				Name:              "storage",
+				GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "group-level", Namespace: "test"}},
+			},
+		}
+		TestClusterInstance.Spec.Nodes[1].Group = "storage"
+		// give the workers group a second member so the per-group node
+		// counts differ (workers: 2, storage: 1)
+		TestClusterInstance.Spec.Nodes = append(TestClusterInstance.Spec.Nodes,
+			v1alpha1.NodeSpec{HostName: "node3", Group: "workers"})
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		objects := rendered.GetRenderObjects()
+		// one cluster object and one group object per group; the nodes
+		// define no template refs of their own and render nothing
+		Expect(objects).To(HaveLen(3))
+
+		nodePools := make([]renderedObjectIdentity, 0, 2)
+		nodeCounts := make(map[string]int64)
+		for _, object := range objects {
+			if object.GetKind() == "NodePool" {
+				nodePools = append(nodePools, renderedObjectIdentity{Kind: object.GetKind(), Name: object.GetName()})
+				spec, found, err := unstructured.NestedInt64(
+					object.GetObject().Object, "spec", "nodeCount")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				nodeCounts[object.GetName()] = spec
+			}
+		}
+		Expect(nodePools).To(ConsistOf(
+			renderedObjectIdentity{Kind: "NodePool", Name: "workers"},
+			renderedObjectIdentity{Kind: "NodePool", Name: "storage"},
+		))
+		// each group renders with its own member-node count
+		Expect(nodeCounts).To(Equal(map[string]int64{"workers": 2, "storage": 1}))
+	})
+
+	It("renders grouped nodes once per node using group-supplied template refs", func() {
+		nodeTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
+			Data:       map[string]string{"BareMetalHost": GetMockBasicNodeTemplate("BareMetalHost")},
+		}
+		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+		// The nodes define no templateRefs of their own; the group supplies them
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "workers"},
+		}
+		TestClusterInstance.Spec.Groups[0].NodeSpec.TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "node-level", Namespace: "test"},
+		}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		objects := rendered.GetRenderObjects()
+		Expect(objects).To(HaveLen(3))
+
+		hosts := make([]renderedObjectIdentity, 0, 2)
+		for _, object := range objects {
+			if object.GetKind() == "BareMetalHost" {
+				hosts = append(hosts, renderedObjectIdentity{Kind: object.GetKind(), Name: object.GetName()})
+			}
+		}
+		Expect(hosts).To(ConsistOf(
+			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node1"},
+			renderedObjectIdentity{Kind: "BareMetalHost", Name: "node2"},
+		))
+	})
+
+	It("applies group extraLabels only to group-rendered objects", func() {
+		groupTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "group-level", Namespace: "test"},
+			Data:       map[string]string{"NodePool": GetMockBasicGroupTemplate("NodePool")},
+		}
+		Expect(c.Create(ctx, groupTemplates)).To(Succeed())
+
+		nodeTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
+			Data:       map[string]string{"NodePool": GetMockBasicNodeTemplate("NodePool")},
+		}
+		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{
+				Name:              "workers",
+				GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "group-level", Namespace: "test"}},
+				ExtraLabels:       map[string]map[string]string{"NodePool": {"group-only": "group"}},
+			},
+		}
+		TestClusterInstance.Spec.Nodes[0].TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "node-level", Namespace: "test"},
+		}
+		TestClusterInstance.Spec.Nodes[0].ExtraLabels = map[string]map[string]string{
+			"NodePool": {"node-only": "node"},
+		}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		objects := rendered.GetRenderObjects()
+		// one cluster object, one group object, one node object with template
+		// refs; node2 has none and renders nothing
+		Expect(objects).To(HaveLen(3))
+
+		// Verify the expected objects were actually rendered so the label
+		// assertions below cannot pass vacuously
+		names := make([]string, 0, len(objects))
+		for _, object := range objects {
+			names = append(names, object.GetName())
+		}
+		Expect(names).To(ContainElements("workers", "node1", TestClusterInstance.Name))
+
+		for _, object := range objects {
+			if object.GetName() == "workers" {
+				Expect(object.GetLabels()).To(HaveKeyWithValue("group-only", "group"))
+				Expect(object.GetLabels()).ToNot(HaveKey("node-only"))
+			}
+			if object.GetName() == "node1" {
+				Expect(object.GetLabels()).To(HaveKeyWithValue("node-only", "node"))
+				Expect(object.GetLabels()).ToNot(HaveKey("group-only"))
+			}
+		}
+	})
+
+	It("suppresses node-rendered manifests using merged group suppressedManifests", func() {
+		nodeTemplates := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
+			Data: map[string]string{
+				"SuppressedKind": GetMockBasicNodeTemplate("SuppressedKind"),
+				"RenderedKind":   GetMockBasicNodeTemplate("RenderedKind"),
+			},
+		}
+		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+		// The group suppresses a kind the node does not mention
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{Name: "workers"},
+		}
+		TestClusterInstance.Spec.Groups[0].NodeSpec.SuppressedManifests = []string{"SuppressedKind"}
+		TestClusterInstance.Spec.Nodes[0].TemplateRefs = []v1alpha1.TemplateRef{
+			{Name: "node-level", Namespace: "test"},
+		}
+
+		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		objects := rendered.GetRenderObjects()
+		Expect(objects).To(HaveLen(2))
+
+		for _, object := range objects {
+			Expect(object.GetKind()).ToNot(Equal("SuppressedKind"))
+		}
+	})
+
+	It("fails when a group template ConfigMap does not exist", func() {
+		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+			{
+				Name:              "workers",
+				GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "does-not-exist", Namespace: "test"}},
+			},
+		}
+
+		_, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring("failed to get ConfigMap test/does-not-exist")))
 	})
 })

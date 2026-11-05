@@ -37,9 +37,6 @@ const maxK8sNameLength = 253
 const maxGenerationLength = maxK8sNameLength - 100
 const maxGroupNameLength = 63
 
-// defaultNodeRole is the CRD default value for NodeSpec.role.
-const defaultNodeRole = "master"
-
 // groupNameRegex matches a DNS-1123 label, the same pattern enforced by the
 // NodeSpec.group and NodeGroupSpec.name CRD markers.
 var groupNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -202,11 +199,11 @@ func ValidateClusterInstance(clusterInstance *ClusterInstance) error {
 		return fmt.Errorf("invalid group definition(s): %w", err)
 	}
 	for _, node := range clusterInstance.Spec.Nodes {
-		var group *NodeGroupSpec
-		if node.Group != "" {
-			group = groupIndex[node.Group]
+		var groupSpec *GroupNodeSpec
+		if group := groupIndex[node.Group]; group != nil {
+			groupSpec = &group.NodeSpec
 		}
-		if len(effectiveNodeTemplateRefs(node, group)) == 0 {
+		if len(node.EffectiveTemplateRefs(groupSpec)) == 0 {
 			return fmt.Errorf("missing node-level template reference for node %q", node.HostName)
 		}
 	}
@@ -288,40 +285,6 @@ func validateGroupReferences(clusterInstance *ClusterInstance) error {
 	}
 
 	return nil
-}
-
-// effectiveNodeTemplateRefs returns the node's templateRefs unioned with its
-// group's nodeSpec.templateRefs, group entries first, without duplicates.
-func effectiveNodeTemplateRefs(node NodeSpec, group *NodeGroupSpec) []TemplateRef {
-	if group == nil || len(group.NodeSpec.TemplateRefs) == 0 {
-		return node.TemplateRefs
-	}
-
-	refs := make([]TemplateRef, 0, len(group.NodeSpec.TemplateRefs)+len(node.TemplateRefs))
-	refs = append(refs, group.NodeSpec.TemplateRefs...)
-	for _, ref := range node.TemplateRefs {
-		if !slices.Contains(refs, ref) {
-			refs = append(refs, ref)
-		}
-	}
-	return refs
-}
-
-// effectiveNodeRole resolves the role a node renders with when its group
-// supplies one. The node's own role wins unless it is unset or equal to the
-// CRD default ("master"), in which case the group role takes precedence: the
-// API server persists CRD defaults, so a defaulted node role cannot be
-// distinguished from an explicitly written one. A node that must keep the
-// default role while its group sets another must not rely on group role
-// inheritance.
-func effectiveNodeRole(node NodeSpec, group *NodeGroupSpec) string {
-	if group == nil || group.NodeSpec.Role == "" {
-		return node.Role
-	}
-	if node.Role == "" || node.Role == defaultNodeRole {
-		return group.NodeSpec.Role
-	}
-	return node.Role
 }
 
 // validatePostProvisioningChanges checks for changes between old and new ClusterInstance specifications.
@@ -994,11 +957,11 @@ func validateControlPlaneAgentCount(clusterInstance *ClusterInstance) error {
 	controlPlaneCount := 0
 	arbiterCount := 0
 	for _, node := range clusterInstance.Spec.Nodes {
-		var group *NodeGroupSpec
-		if node.Group != "" {
-			group = groupIndex[node.Group]
+		role := node.Role
+		if group := groupIndex[node.Group]; group != nil {
+			role = MergeNodeSpec(&group.NodeSpec, node).Role
 		}
-		switch effectiveNodeRole(node, group) {
+		switch role {
 		case "master":
 			controlPlaneCount++
 		case "arbiter":

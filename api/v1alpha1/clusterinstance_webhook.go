@@ -59,7 +59,7 @@ func groupTemplateMismatchWarnings(clusterInstance *ClusterInstance) admission.W
 		if !exists {
 			continue
 		}
-		for _, ref := range effectiveNodeTemplateRefs(node, group) {
+		for _, ref := range node.EffectiveTemplateRefs(&group.NodeSpec) {
 			if v1NodeTemplateConfigMaps[ref.Name] {
 				warnings = append(warnings, fmt.Sprintf(
 					"node %q references group %q but still uses node template %q; "+
