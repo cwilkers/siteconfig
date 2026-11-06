@@ -2687,6 +2687,15 @@ func createSSAMockClient(objects ...client.Object) client.Client {
 			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 				// For Apply patches, simulate SSA behavior with create/update
 				if patch.Type() == "application/apply-patch+yaml" {
+					// Honor dry-run requests: report success without persisting.
+					patchOpts := &client.PatchOptions{}
+					for _, opt := range opts {
+						opt.ApplyToPatch(patchOpts)
+					}
+					if len(patchOpts.DryRun) > 0 {
+						return nil
+					}
+
 					key := types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}
 					existing := &unstructured.Unstructured{}
 					existing.SetGroupVersionKind(obj.GetObjectKind().GroupVersionKind())
@@ -4032,6 +4041,252 @@ var _ = Describe("renderManifests with built-in templates", func() {
 			Expect(found).To(BeTrue(), "expected spec.replicas on NodePool %s", hostName)
 			Expect(replicas).To(Equal(int64(1)))
 		}
+	})
+})
+
+var _ = Describe("group pause", func() {
+	const (
+		groupName             = "workers"
+		groupNode1Hostname    = "group-node-1"
+		groupNode2Hostname    = "group-node-2"
+		ungroupedNodeHostname = "ungrouped-node"
+		pausedUntil           = "Fri, 31 Dec 9999 23:59:59 GMT"
+
+		nodePoolAPIVersion      = "hypershift.openshift.io/v1beta1"
+		infraEnvAPIVersion      = "agent-install.openshift.io/v1beta1"
+		bareMetalHostAPIVersion = "metal3.io/v1alpha1"
+	)
+
+	var (
+		c                   client.Client
+		r                   *ClusterInstanceReconciler
+		ctx                 = context.Background()
+		testLogger          = zap.NewNop().Named("Test")
+		siteConfigNamespace = os.Getenv("POD_NAMESPACE")
+		key                 types.NamespacedName
+		clusterInstance     *v1alpha1.ClusterInstance
+	)
+
+	getObject := func(apiVersion, kind, name string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetAPIVersion(apiVersion)
+		obj.SetKind(kind)
+		ExpectWithOffset(1, c.Get(ctx, types.NamespacedName{Name: name, Namespace: key.Name}, obj)).To(Succeed())
+		return obj
+	}
+
+	reconcile := func() {
+		res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+		ExpectWithOffset(1, err).ToNot(HaveOccurred())
+		ExpectWithOffset(1, res).To(Equal(ctrl.Result{}))
+	}
+
+	createClusterInstance := func(paused bool) {
+		clusterInstance.Spec.Groups[0].Paused = paused
+		ExpectWithOffset(1, c.Create(ctx, clusterInstance)).To(Succeed())
+	}
+
+	setGroupPaused := func(paused bool, generation int64) {
+		ExpectWithOffset(1, c.Get(ctx, key, clusterInstance)).To(Succeed())
+		clusterInstance.Spec.Groups[0].Paused = paused
+		clusterInstance.Generation = generation
+		ExpectWithOffset(1, c.Update(ctx, clusterInstance)).To(Succeed())
+	}
+
+	groupNodePoolManifests := func() []v1alpha1.ManifestReference {
+		latest := &v1alpha1.ClusterInstance{}
+		ExpectWithOffset(1, c.Get(ctx, key, latest)).To(Succeed())
+
+		var refs []v1alpha1.ManifestReference
+		for _, ref := range latest.Status.ManifestsRendered {
+			if ref.Kind == "NodePool" && ref.Name == groupName {
+				refs = append(refs, ref)
+			}
+		}
+		return refs
+	}
+
+	BeforeEach(func() {
+		c = createSSAMockClient()
+		r = &ClusterInstanceReconciler{
+			Client:          c,
+			Scheme:          scheme.Scheme,
+			Log:             testLogger,
+			TmplEngine:      ci.NewTemplateEngine(),
+			DeletionHandler: &deletion.DeletionHandler{Client: c, Logger: testLogger},
+		}
+
+		clusterName := TestClusterInstanceName
+		key = types.NamespacedName{Name: clusterName, Namespace: clusterName}
+
+		Expect(c.Create(ctx, ci.GetMockClusterImageSet("openshift-test", "test-image"))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockPullSecret(TestPullSecret, clusterName))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockBmcSecret(TestBMHSecret, clusterName))).To(Succeed())
+
+		templateSets := map[string]map[string]string{
+			hcp_templates.ClusterLevelInstallTemplates:     hcp_templates.GetClusterTemplates(),
+			hcp_templates.NodeLevelInstallTemplates:        hcp_templates.GetNodeTemplates(),
+			hcp_templates.GroupLevelInstallTemplates:       hcp_templates.GetGroupTemplates(),
+			hcp_templates.GroupedNodeLevelInstallTemplates: hcp_templates.GetGroupedNodeTemplates(),
+		}
+		for name, data := range templateSets {
+			Expect(c.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: siteConfigNamespace},
+				Data:       data,
+			})).To(Succeed())
+		}
+
+		netConfig := ci.GetMockNetConfig()
+		newNode := func(hostName, macAddress, group string) v1alpha1.NodeSpec {
+			node := v1alpha1.NodeSpec{
+				HostName:              hostName,
+				Group:                 group,
+				BmcAddress:            "192.0.2.1",
+				BmcCredentialsName:    v1alpha1.BmcCredentialsName{Name: TestBMHSecret},
+				BootMACAddress:        macAddress,
+				BootMode:              "UEFI",
+				AutomatedCleaningMode: "disabled",
+				IronicInspect:         "enabled",
+				Role:                  "worker",
+				NodeNetwork: &aiv1beta1.NMStateConfigSpec{
+					NetConfig:  aiv1beta1.NetConfig{Raw: []byte(netConfig.RawNetConfig())},
+					Interfaces: netConfig.Interfaces,
+				},
+			}
+			if group == "" {
+				node.TemplateRefs = []v1alpha1.TemplateRef{
+					{Name: hcp_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+				}
+			}
+			return node
+		}
+
+		clusterInstance = &v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       clusterName,
+				Namespace:  clusterName,
+				Generation: 1,
+				Finalizers: []string{clusterInstanceFinalizer},
+				Annotations: map[string]string{
+					veleroRestoreStatusAnnotation: "true",
+				},
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				ClusterName:            clusterName,
+				ClusterType:            v1alpha1.ClusterTypeHostedControlPlane,
+				PullSecretRef:          corev1.LocalObjectReference{Name: TestPullSecret},
+				ClusterImageSetNameRef: "openshift-test",
+				SSHPublicKey:           "ssh-rsa AAAATEST",
+				BaseDomain:             "example.com",
+				TemplateRefs: []v1alpha1.TemplateRef{
+					{Name: hcp_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+				},
+				Groups: []v1alpha1.NodeGroupSpec{
+					{
+						Name: groupName,
+						GroupTemplateRefs: []v1alpha1.TemplateRef{
+							{Name: hcp_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+						},
+						NodeSpec: v1alpha1.GroupNodeSpec{
+							Role: "worker",
+							TemplateRefs: []v1alpha1.TemplateRef{
+								{Name: hcp_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+							},
+						},
+					},
+				},
+				Nodes: []v1alpha1.NodeSpec{
+					newNode(groupNode1Hostname, "00:00:5E:00:53:00", groupName),
+					newNode(groupNode2Hostname, "00:00:5E:00:53:01", groupName),
+					newNode(ungroupedNodeHostname, "00:00:5E:00:53:02", ""),
+				},
+			},
+		}
+	})
+
+	It("re-renders and re-applies a paused group's objects", func() {
+		createClusterInstance(false)
+		reconcile()
+
+		nodePool := getObject(nodePoolAPIVersion, "NodePool", groupName)
+		_, found, err := unstructured.NestedString(nodePool.Object, "spec", "pausedUntil")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeFalse())
+		Expect(groupNodePoolManifests()).To(HaveLen(1))
+
+		setGroupPaused(true, 2)
+		reconcile()
+
+		nodePool = getObject(nodePoolAPIVersion, "NodePool", groupName)
+		value, found, err := unstructured.NestedString(nodePool.Object, "spec", "pausedUntil")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(value).To(Equal(pausedUntil))
+
+		refs := groupNodePoolManifests()
+		Expect(refs).To(HaveLen(1))
+		Expect(refs[0].Status).To(Equal(v1alpha1.ManifestRenderedSuccess))
+	})
+
+	It("removes pausedUntil when the group is unpaused", func() {
+		createClusterInstance(true)
+		reconcile()
+
+		nodePool := getObject(nodePoolAPIVersion, "NodePool", groupName)
+		value, found, err := unstructured.NestedString(nodePool.Object, "spec", "pausedUntil")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(value).To(Equal(pausedUntil))
+
+		setGroupPaused(false, 2)
+		reconcile()
+
+		nodePool = getObject(nodePoolAPIVersion, "NodePool", groupName)
+		_, found, err = unstructured.NestedString(nodePool.Object, "spec", "pausedUntil")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("does not skip other objects in a paused group", func() {
+		createClusterInstance(false)
+		reconcile()
+
+		// Corrupt objects rendered from the group templates; re-applying the
+		// paused group must restore them.
+		infraEnv := getObject(infraEnvAPIVersion, "InfraEnv", groupName)
+		Expect(unstructured.SetNestedStringMap(infraEnv.Object,
+			map[string]string{"stale": "true"}, "spec", "agentLabels")).To(Succeed())
+		Expect(c.Update(ctx, infraEnv)).To(Succeed())
+
+		bareMetalHost := getObject(bareMetalHostAPIVersion, "BareMetalHost", groupNode1Hostname)
+		bareMetalHost.SetLabels(map[string]string{"stale": "true"})
+		Expect(c.Update(ctx, bareMetalHost)).To(Succeed())
+
+		setGroupPaused(true, 2)
+		reconcile()
+
+		infraEnv = getObject(infraEnvAPIVersion, "InfraEnv", groupName)
+		agentLabels, found, err := unstructured.NestedStringMap(infraEnv.Object, "spec", "agentLabels")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(agentLabels).To(HaveKeyWithValue(hcp_templates.GroupLabelKey, groupName))
+
+		bareMetalHost = getObject(bareMetalHostAPIVersion, "BareMetalHost", groupNode1Hostname)
+		Expect(bareMetalHost.GetLabels()).To(HaveKeyWithValue("infraenvs.agent-install.openshift.io", groupName))
+		Expect(bareMetalHost.GetLabels()).ToNot(HaveKey("stale"))
+	})
+
+	It("does not change ungrouped node rendering while a group is paused", func() {
+		createClusterInstance(false)
+		reconcile()
+
+		before := getObject(nodePoolAPIVersion, "NodePool", ungroupedNodeHostname).Object["spec"]
+
+		setGroupPaused(true, 2)
+		reconcile()
+
+		after := getObject(nodePoolAPIVersion, "NodePool", ungroupedNodeHostname).Object["spec"]
+		Expect(after).To(Equal(before))
 	})
 })
 

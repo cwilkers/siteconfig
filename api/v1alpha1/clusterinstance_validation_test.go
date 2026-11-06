@@ -1225,6 +1225,23 @@ var _ = Describe("determineSpecChangePermission", func() {
 				Expect(result).To(Equal(SpecChangeUnrestricted), "Should return SpecChangeUnrestricted when OLD HoldInstallation=true and provisioning InProgress")
 			})
 
+			It("allows toggling groups[].paused during provisioning when HoldInstallation is enabled", func() {
+				oldClusterInstance.Spec.Groups = []NodeGroupSpec{{Name: "workers", Paused: false}}
+				oldClusterInstance.Status.Conditions = []metav1.Condition{
+					{
+						Type:   string(ClusterProvisioned),
+						Status: metav1.ConditionFalse,
+						Reason: string(InProgress),
+					},
+				}
+
+				newClusterInstance = oldClusterInstance.DeepCopy()
+				newClusterInstance.Spec.Groups[0].Paused = true
+
+				result := determineSpecChangePermission(oldClusterInstance, newClusterInstance)
+				Expect(result).To(Equal(SpecChangeUnrestricted))
+			})
+
 			It("should return SpecChangeUnrestricted when provisioning has Failed", func() {
 				oldClusterInstance.Status.Conditions = []metav1.Condition{
 					{
