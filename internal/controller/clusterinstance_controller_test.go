@@ -4042,6 +4042,69 @@ var _ = Describe("renderManifests with built-in templates", func() {
 			Expect(replicas).To(Equal(int64(1)))
 		}
 	})
+
+	It("reconciles a ClusterInstance with no groups exactly as before", func() {
+		Expect(r.handleValidate(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		rendered, err := r.renderManifests(ctx, testLogger, clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		// No built-in manifest is pruned or suppressed by default
+		Expect(rendered.GetPruneObjects()).To(BeEmpty())
+		Expect(rendered.GetSuppressObjects()).To(BeEmpty())
+
+		objects := rendered.GetRenderObjects()
+		Expect(objects).To(HaveLen(12))
+
+		kindCounts := map[string]int{}
+		namesByKind := map[string][]string{}
+		nodePools := map[string]ci.RenderedObject{}
+		for _, object := range objects {
+			kind := object.GetKind()
+			kindCounts[kind]++
+			namesByKind[kind] = append(namesByKind[kind], object.GetName())
+			if kind == "NodePool" {
+				nodePools[object.GetName()] = object
+			}
+		}
+
+		// Cluster-level objects are rendered once, node-level objects once per node
+		Expect(kindCounts).To(Equal(map[string]int{
+			"HostedCluster":         1,
+			"ManagedCluster":        1,
+			"KlusterletAddonConfig": 1,
+			"Secret":                1,
+			"InfraEnv":              2,
+			"NodePool":              2,
+			"BareMetalHost":         2,
+			"NMStateConfig":         2,
+		}))
+
+		Expect(namesByKind["HostedCluster"]).To(ConsistOf(clusterName))
+		Expect(namesByKind["InfraEnv"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["BareMetalHost"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["NMStateConfig"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+		Expect(namesByKind["NodePool"]).To(ConsistOf(TestNode1Hostname, TestNode2Hostname))
+
+		// Each node is backed by a single-replica NodePool on sync-wave 2
+		for _, hostName := range []string{TestNode1Hostname, TestNode2Hostname} {
+			nodePool, ok := nodePools[hostName]
+			Expect(ok).To(BeTrue(), "expected a NodePool named after node %s", hostName)
+
+			wave, waveErr := nodePool.GetSyncWave()
+			Expect(waveErr).ToNot(HaveOccurred())
+			Expect(wave).To(Equal(2))
+
+			replicas, found, replicasErr := unstructured.NestedInt64(nodePool.GetObject().Object, "spec", "replicas")
+			Expect(replicasErr).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue(), "expected spec.replicas on NodePool %s", hostName)
+			Expect(replicas).To(Equal(int64(1)))
+		}
+
+		applied, err := r.applyRenderedManifests(ctx, testLogger, clusterInstance, objects)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(applied).To(BeTrue())
+	})
 })
 
 var _ = Describe("group pause", func() {
@@ -4287,6 +4350,345 @@ var _ = Describe("group pause", func() {
 
 		after := getObject(nodePoolAPIVersion, "NodePool", ungroupedNodeHostname).Object["spec"]
 		Expect(after).To(Equal(before))
+	})
+})
+
+var _ = Describe("group rendering with built-in templates", func() {
+	const (
+		workersGroup = "workers"
+		storageGroup = "storage"
+
+		nodePoolAPIVersion      = "hypershift.openshift.io/v1beta1"
+		infraEnvAPIVersion      = "agent-install.openshift.io/v1beta1"
+		bareMetalHostAPIVersion = "metal3.io/v1alpha1"
+	)
+
+	var (
+		c                   client.Client
+		r                   *ClusterInstanceReconciler
+		ctx                 = context.Background()
+		testLogger          = zap.NewNop().Named("Test")
+		siteConfigNamespace = os.Getenv("POD_NAMESPACE")
+		clusterName         = TestClusterInstanceName
+		key                 types.NamespacedName
+	)
+
+	newNode := func(hostName, macAddress, group string) v1alpha1.NodeSpec {
+		netConfig := ci.GetMockNetConfig()
+		node := v1alpha1.NodeSpec{
+			HostName:           hostName,
+			Group:              group,
+			BmcAddress:         "192.0.2.1",
+			BmcCredentialsName: v1alpha1.BmcCredentialsName{Name: TestBMHSecret},
+			BootMACAddress:     macAddress,
+			NodeNetwork: &aiv1beta1.NMStateConfigSpec{
+				NetConfig:  aiv1beta1.NetConfig{Raw: []byte(netConfig.RawNetConfig())},
+				Interfaces: netConfig.Interfaces,
+			},
+		}
+		if group == "" {
+			node.TemplateRefs = []v1alpha1.TemplateRef{
+				{Name: hcp_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			}
+		}
+		return node
+	}
+
+	newClusterInstance := func(
+		clusterType v1alpha1.ClusterType,
+		clusterTemplateRef string,
+		groups []v1alpha1.NodeGroupSpec,
+		nodes []v1alpha1.NodeSpec,
+	) *v1alpha1.ClusterInstance {
+		return &v1alpha1.ClusterInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: clusterName,
+			},
+			Spec: v1alpha1.ClusterInstanceSpec{
+				ClusterName:            clusterName,
+				ClusterType:            clusterType,
+				PullSecretRef:          corev1.LocalObjectReference{Name: TestPullSecret},
+				ClusterImageSetNameRef: "openshift-test",
+				SSHPublicKey:           "ssh-rsa AAAATEST",
+				BaseDomain:             "example.com",
+				TemplateRefs: []v1alpha1.TemplateRef{
+					{Name: clusterTemplateRef, Namespace: siteConfigNamespace},
+				},
+				Groups: groups,
+				Nodes:  nodes,
+			},
+		}
+	}
+
+	getObject := func(apiVersion, kind, name string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetAPIVersion(apiVersion)
+		obj.SetKind(kind)
+		ExpectWithOffset(1, c.Get(ctx, types.NamespacedName{Name: name, Namespace: clusterName}, obj)).To(Succeed())
+		return obj
+	}
+
+	reconcile := func() {
+		res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+		ExpectWithOffset(1, err).ToNot(HaveOccurred())
+		ExpectWithOffset(1, res).To(Equal(ctrl.Result{}))
+	}
+
+	renderedKindCountsAndNames := func(rendered ci.RenderedObjectCollection) (map[string]int, map[string][]string) {
+		kindCounts := map[string]int{}
+		namesByKind := map[string][]string{}
+		for _, object := range rendered.GetRenderObjects() {
+			kind := object.GetKind()
+			kindCounts[kind]++
+			namesByKind[kind] = append(namesByKind[kind], object.GetName())
+		}
+		return kindCounts, namesByKind
+	}
+
+	BeforeEach(func() {
+		c = createSSAMockClient()
+		r = &ClusterInstanceReconciler{
+			Client:          c,
+			Scheme:          scheme.Scheme,
+			Log:             testLogger,
+			TmplEngine:      ci.NewTemplateEngine(),
+			DeletionHandler: &deletion.DeletionHandler{Client: c, Logger: testLogger},
+		}
+
+		key = types.NamespacedName{Name: clusterName, Namespace: clusterName}
+
+		Expect(c.Create(ctx, ci.GetMockClusterImageSet("openshift-test", "test-image"))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockPullSecret(TestPullSecret, clusterName))).To(Succeed())
+		Expect(c.Create(ctx, ci.GetMockBmcSecret(TestBMHSecret, clusterName))).To(Succeed())
+
+		templateSets := map[string]map[string]string{
+			hcp_templates.ClusterLevelInstallTemplates:     hcp_templates.GetClusterTemplates(),
+			hcp_templates.NodeLevelInstallTemplates:        hcp_templates.GetNodeTemplates(),
+			hcp_templates.GroupLevelInstallTemplates:       hcp_templates.GetGroupTemplates(),
+			hcp_templates.GroupedNodeLevelInstallTemplates: hcp_templates.GetGroupedNodeTemplates(),
+			ai_templates.ClusterLevelInstallTemplates:      ai_templates.GetClusterTemplates(),
+			ai_templates.NodeLevelInstallTemplates:         ai_templates.GetNodeTemplates(),
+			ai_templates.GroupLevelInstallTemplates:        ai_templates.GetGroupTemplates(),
+			ai_templates.GroupedNodeLevelInstallTemplates:  ai_templates.GetGroupedNodeTemplates(),
+		}
+		for name, data := range templateSets {
+			Expect(c.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: siteConfigNamespace},
+				Data:       data,
+			})).To(Succeed())
+		}
+	})
+
+	It("renders an HCP cluster with multi-replica NodePools from groups", func() {
+		hcpGroup := func(name string) v1alpha1.NodeGroupSpec {
+			return v1alpha1.NodeGroupSpec{
+				Name: name,
+				GroupTemplateRefs: []v1alpha1.TemplateRef{
+					{Name: hcp_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+				},
+				NodeSpec: v1alpha1.GroupNodeSpec{
+					Role: "worker",
+					TemplateRefs: []v1alpha1.TemplateRef{
+						{Name: hcp_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+					},
+				},
+			}
+		}
+
+		clusterInstance := newClusterInstance(
+			v1alpha1.ClusterTypeHostedControlPlane,
+			hcp_templates.ClusterLevelInstallTemplates,
+			[]v1alpha1.NodeGroupSpec{hcpGroup(workersGroup), hcpGroup(storageGroup)},
+			[]v1alpha1.NodeSpec{
+				newNode("worker-1", "00:00:5E:00:53:00", workersGroup),
+				newNode("worker-2", "00:00:5E:00:53:01", workersGroup),
+				newNode("storage-1", "00:00:5E:00:53:02", storageGroup),
+				newNode("storage-2", "00:00:5E:00:53:03", storageGroup),
+			},
+		)
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+		Expect(r.handleValidate(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		rendered, err := r.renderManifests(ctx, testLogger, clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		kindCounts, namesByKind := renderedKindCountsAndNames(rendered)
+		Expect(kindCounts).To(Equal(map[string]int{
+			"HostedCluster":         1,
+			"ManagedCluster":        1,
+			"KlusterletAddonConfig": 1,
+			"Secret":                1,
+			"InfraEnv":              2,
+			"NodePool":              2,
+			"BareMetalHost":         4,
+			"NMStateConfig":         4,
+		}))
+		Expect(namesByKind["InfraEnv"]).To(ConsistOf(workersGroup, storageGroup))
+		Expect(namesByKind["NodePool"]).To(ConsistOf(workersGroup, storageGroup))
+		Expect(namesByKind["BareMetalHost"]).To(ConsistOf(
+			"worker-1", "worker-2", "storage-1", "storage-2",
+		))
+
+		nodePools := map[string]ci.RenderedObject{}
+		for _, object := range rendered.GetRenderObjects() {
+			if object.GetKind() == "NodePool" {
+				nodePools[object.GetName()] = object
+			}
+		}
+		for _, group := range []string{workersGroup, storageGroup} {
+			nodePool, ok := nodePools[group]
+			Expect(ok).To(BeTrue(), "expected a NodePool for group %s", group)
+
+			replicas, found, replicasErr := unstructured.NestedInt64(
+				nodePool.GetObject().Object, "spec", "replicas")
+			Expect(replicasErr).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue(), "expected spec.replicas on NodePool %s", group)
+			Expect(replicas).To(Equal(int64(2)))
+
+			selector, found, selectorErr := unstructured.NestedStringMap(
+				nodePool.GetObject().Object, "spec", "platform", "agent", "agentLabelSelector", "matchLabels")
+			Expect(selectorErr).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(selector).To(HaveKeyWithValue(hcp_templates.GroupLabelKey, group))
+		}
+
+		applied, err := r.applyRenderedManifests(ctx, testLogger, clusterInstance, rendered.GetRenderObjects())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(applied).To(BeTrue())
+
+		for _, group := range []string{workersGroup, storageGroup} {
+			nodePool := getObject(nodePoolAPIVersion, "NodePool", group)
+			replicas, found, replicasErr := unstructured.NestedInt64(nodePool.Object, "spec", "replicas")
+			Expect(replicasErr).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(replicas).To(Equal(int64(2)))
+
+			getObject(infraEnvAPIVersion, "InfraEnv", group)
+		}
+		for _, hostName := range []string{"worker-1", "worker-2", "storage-1", "storage-2"} {
+			getObject(bareMetalHostAPIVersion, "BareMetalHost", hostName)
+		}
+	})
+
+	It("renders an AI cluster with grouped nodes sharing one InfraEnv", func() {
+		clusterInstance := newClusterInstance(
+			v1alpha1.ClusterTypeHighlyAvailable,
+			ai_templates.ClusterLevelInstallTemplates,
+			[]v1alpha1.NodeGroupSpec{
+				{
+					Name: workersGroup,
+					GroupTemplateRefs: []v1alpha1.TemplateRef{
+						{Name: ai_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+					},
+					NodeSpec: v1alpha1.GroupNodeSpec{
+						Role: "worker",
+						TemplateRefs: []v1alpha1.TemplateRef{
+							{Name: ai_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+						},
+					},
+				},
+			},
+			[]v1alpha1.NodeSpec{
+				func() v1alpha1.NodeSpec {
+					node := newNode("master-1", "00:00:5E:00:53:10", workersGroup)
+					node.Role = "master"
+					return node
+				}(),
+				newNode("worker-1", "00:00:5E:00:53:11", workersGroup),
+				newNode("worker-2", "00:00:5E:00:53:12", workersGroup),
+			},
+		)
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+		Expect(r.handleValidate(ctx, testLogger, clusterInstance)).To(Succeed())
+
+		rendered, err := r.renderManifests(ctx, testLogger, clusterInstance)
+		Expect(err).ToNot(HaveOccurred())
+
+		kindCounts, namesByKind := renderedKindCountsAndNames(rendered)
+		Expect(kindCounts).To(Equal(map[string]int{
+			"AgentClusterInstall":   1,
+			"ClusterDeployment":     1,
+			"ManagedCluster":        1,
+			"KlusterletAddonConfig": 1,
+			"InfraEnv":              1,
+			"BareMetalHost":         3,
+			"NMStateConfig":         3,
+		}))
+		Expect(namesByKind["InfraEnv"]).To(ConsistOf(workersGroup))
+		Expect(namesByKind["BareMetalHost"]).To(ConsistOf("master-1", "worker-1", "worker-2"))
+
+		for _, object := range rendered.GetRenderObjects() {
+			if object.GetKind() != "BareMetalHost" {
+				continue
+			}
+			Expect(object.GetLabels()).To(HaveKeyWithValue(
+				"infraenvs.agent-install.openshift.io", workersGroup),
+				"BareMetalHost %s must reference the group InfraEnv", object.GetName())
+		}
+
+		applied, err := r.applyRenderedManifests(ctx, testLogger, clusterInstance, rendered.GetRenderObjects())
+		Expect(err).ToNot(HaveOccurred())
+		Expect(applied).To(BeTrue())
+
+		getObject(infraEnvAPIVersion, "InfraEnv", workersGroup)
+		for _, hostName := range []string{"master-1", "worker-1", "worker-2"} {
+			getObject(bareMetalHostAPIVersion, "BareMetalHost", hostName)
+		}
+	})
+
+	It("re-reconciles after adding a node to a group", func() {
+		clusterInstance := newClusterInstance(
+			v1alpha1.ClusterTypeHostedControlPlane,
+			hcp_templates.ClusterLevelInstallTemplates,
+			[]v1alpha1.NodeGroupSpec{
+				{
+					Name: workersGroup,
+					GroupTemplateRefs: []v1alpha1.TemplateRef{
+						{Name: hcp_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+					},
+					NodeSpec: v1alpha1.GroupNodeSpec{
+						Role: "worker",
+						TemplateRefs: []v1alpha1.TemplateRef{
+							{Name: hcp_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+						},
+					},
+				},
+			},
+			[]v1alpha1.NodeSpec{
+				newNode("worker-1", "00:00:5E:00:53:20", workersGroup),
+				newNode("worker-2", "00:00:5E:00:53:21", workersGroup),
+			},
+		)
+		clusterInstance.Generation = 1
+		clusterInstance.Finalizers = []string{clusterInstanceFinalizer}
+		clusterInstance.Annotations = map[string]string{
+			veleroRestoreStatusAnnotation: "true",
+		}
+		Expect(c.Create(ctx, clusterInstance)).To(Succeed())
+
+		reconcile()
+		nodePool := getObject(nodePoolAPIVersion, "NodePool", workersGroup)
+		replicas, found, replicasErr := unstructured.NestedInt64(nodePool.Object, "spec", "replicas")
+		Expect(replicasErr).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(replicas).To(Equal(int64(2)))
+
+		latest := &v1alpha1.ClusterInstance{}
+		Expect(c.Get(ctx, key, latest)).To(Succeed())
+		latest.Spec.Nodes = append(latest.Spec.Nodes,
+			newNode("worker-3", "00:00:5E:00:53:22", workersGroup))
+		latest.Generation = 2
+		Expect(c.Update(ctx, latest)).To(Succeed())
+
+		reconcile()
+		nodePool = getObject(nodePoolAPIVersion, "NodePool", workersGroup)
+		replicas, found, replicasErr = unstructured.NestedInt64(nodePool.Object, "spec", "replicas")
+		Expect(replicasErr).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(replicas).To(Equal(int64(3)))
+
+		getObject(bareMetalHostAPIVersion, "BareMetalHost", "worker-3")
 	})
 })
 

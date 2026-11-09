@@ -1,0 +1,81 @@
+# example-node[1-4]-bmh-secret & assisted-deployment-pull-secret need to be created under same namespace example-hcp-groups
+# The worker-machine-config, worker-tuning-config, and storage-machine-config ConfigMaps referenced by
+# the groups also need to exist in the namespace.
+---
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-hcp-groups"
+  namespace: "example-hcp-groups"
+spec:
+  baseDomain: "example.com"
+  pullSecretRef:
+    name: "assisted-deployment-pull-secret"
+  clusterImageSetNameRef: "openshift-4.16"
+  sshPublicKey: "ssh-rsa AAAA..."
+  clusterName: "example-hcp-groups"
+  clusterType: HostedControlPlane
+  networkType: "OVNKubernetes"
+  templateRefs:
+    - name: hcp-cluster-templates-v1
+      namespace: siteconfig-operator
+  # Each group renders one NodePool. Its spec.replicas equals the number of
+  # member nodes: the workers and storage groups below therefore render
+  # replicas: 2.
+  groups:
+    - name: "workers"
+      # Set paused to true to render pausedUntil on this group's NodePool
+      # without affecting other groups.
+      paused: false
+      machineConfigRefs:
+        - worker-machine-config
+      tuningConfigRefs:
+        - worker-tuning-config
+      groupTemplateRefs:
+        - name: hcp-group-templates-v1
+          namespace: siteconfig-operator
+      nodeSpec:
+        role: "worker"
+        templateRefs:
+          - name: hcp-grouped-node-templates-v1
+            namespace: siteconfig-operator
+    - name: "storage"
+      machineConfigRefs:
+        - storage-machine-config
+      groupTemplateRefs:
+        - name: hcp-group-templates-v1
+          namespace: siteconfig-operator
+      nodeSpec:
+        role: "worker"
+        nodeLabels:
+          node-role.kubernetes.io/storage: ""
+        templateRefs:
+          - name: hcp-grouped-node-templates-v1
+            namespace: siteconfig-operator
+  # Grouped nodes inherit their role and templates from the group's nodeSpec.
+  # Node-level values override the group values when both are set.
+  nodes:
+    - hostName: "example-node1.example.com"
+      group: "workers"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node1-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:11"
+    - hostName: "example-node2.example.com"
+      group: "workers"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:2]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node2-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:22"
+    - hostName: "example-node3.example.com"
+      group: "storage"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:3]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node3-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:33"
+    - hostName: "example-node4.example.com"
+      group: "storage"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:4]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node4-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:44"

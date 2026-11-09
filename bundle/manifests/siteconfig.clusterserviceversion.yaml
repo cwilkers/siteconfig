@@ -276,6 +276,168 @@ metadata:
           "apiVersion": "siteconfig.open-cluster-management.io/v1alpha1",
           "kind": "ClusterInstance",
           "metadata": {
+            "name": "example-ai-groups",
+            "namespace": "example-ai-groups"
+          },
+          "spec": {
+            "additionalNTPSources": [
+              "1111:2222:3333:4444::2"
+            ],
+            "apiVIPs": [
+              "1111:2222:3333:4444::1:1"
+            ],
+            "baseDomain": "example.com",
+            "clusterImageSetNameRef": "openshift-4.16",
+            "clusterName": "example-ai-groups",
+            "clusterNetwork": [
+              {
+                "cidr": "1001:1::/48",
+                "hostPrefix": 64
+              }
+            ],
+            "clusterType": "HighlyAvailable",
+            "groups": [
+              {
+                "groupTemplateRefs": [
+                  {
+                    "name": "ai-group-templates-v1",
+                    "namespace": "siteconfig-operator"
+                  }
+                ],
+                "name": "workers",
+                "nodeSpec": {
+                  "bootMode": "UEFISecureBoot",
+                  "role": "worker",
+                  "rootDeviceHints": {
+                    "deviceName": "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0"
+                  },
+                  "templateRefs": [
+                    {
+                      "name": "ai-grouped-node-templates-v1",
+                      "namespace": "siteconfig-operator"
+                    }
+                  ]
+                }
+              },
+              {
+                "groupTemplateRefs": [
+                  {
+                    "name": "ai-group-templates-v1",
+                    "namespace": "siteconfig-operator"
+                  }
+                ],
+                "name": "storage",
+                "nodeSpec": {
+                  "bootMode": "UEFISecureBoot",
+                  "nodeLabels": {
+                    "node-role.kubernetes.io/storage": ""
+                  },
+                  "role": "worker",
+                  "rootDeviceHints": {
+                    "deviceName": "/dev/disk/by-path/pci-0000:08:00.0-scsi-0:4:0:0"
+                  },
+                  "templateRefs": [
+                    {
+                      "name": "ai-grouped-node-templates-v1",
+                      "namespace": "siteconfig-operator"
+                    }
+                  ]
+                }
+              }
+            ],
+            "ingressVIPs": [
+              "1111:2222:3333:4444::1:2"
+            ],
+            "networkType": "OVNKubernetes",
+            "nodes": [
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node1-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:11",
+                "group": "workers",
+                "hostName": "example-node1.example.com",
+                "role": "master"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:2]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node2-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:22",
+                "group": "workers",
+                "hostName": "example-node2.example.com",
+                "role": "master"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:3]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node3-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:33",
+                "group": "workers",
+                "hostName": "example-node3.example.com",
+                "role": "master"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:4]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node4-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:44",
+                "group": "workers",
+                "hostName": "example-node4.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:5]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node5-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:55",
+                "group": "workers",
+                "hostName": "example-node5.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:6]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node6-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:66",
+                "group": "storage",
+                "hostName": "example-node6.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:7]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node7-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:77",
+                "group": "storage",
+                "hostName": "example-node7.example.com"
+              }
+            ],
+            "pullSecretRef": {
+              "name": "assisted-deployment-pull-secret"
+            },
+            "serviceNetwork": [
+              {
+                "cidr": "1001:2::/112"
+              }
+            ],
+            "sshPublicKey": "ssh-rsa AAAA...",
+            "templateRefs": [
+              {
+                "name": "ai-cluster-templates-v1",
+                "namespace": "siteconfig-operator"
+              }
+            ]
+          }
+        },
+        {
+          "apiVersion": "siteconfig.open-cluster-management.io/v1alpha1",
+          "kind": "ClusterInstance",
+          "metadata": {
             "name": "example-ai-sno",
             "namespace": "example-ai-sno"
           },
@@ -796,6 +958,120 @@ metadata:
             "templateRefs": [
               {
                 "name": "ai-cluster-templates-v1",
+                "namespace": "siteconfig-operator"
+              }
+            ]
+          }
+        },
+        {
+          "apiVersion": "siteconfig.open-cluster-management.io/v1alpha1",
+          "kind": "ClusterInstance",
+          "metadata": {
+            "name": "example-hcp-groups",
+            "namespace": "example-hcp-groups"
+          },
+          "spec": {
+            "baseDomain": "example.com",
+            "clusterImageSetNameRef": "openshift-4.16",
+            "clusterName": "example-hcp-groups",
+            "clusterType": "HostedControlPlane",
+            "groups": [
+              {
+                "groupTemplateRefs": [
+                  {
+                    "name": "hcp-group-templates-v1",
+                    "namespace": "siteconfig-operator"
+                  }
+                ],
+                "machineConfigRefs": [
+                  "worker-machine-config"
+                ],
+                "name": "workers",
+                "nodeSpec": {
+                  "role": "worker",
+                  "templateRefs": [
+                    {
+                      "name": "hcp-grouped-node-templates-v1",
+                      "namespace": "siteconfig-operator"
+                    }
+                  ]
+                },
+                "paused": false,
+                "tuningConfigRefs": [
+                  "worker-tuning-config"
+                ]
+              },
+              {
+                "groupTemplateRefs": [
+                  {
+                    "name": "hcp-group-templates-v1",
+                    "namespace": "siteconfig-operator"
+                  }
+                ],
+                "machineConfigRefs": [
+                  "storage-machine-config"
+                ],
+                "name": "storage",
+                "nodeSpec": {
+                  "nodeLabels": {
+                    "node-role.kubernetes.io/storage": ""
+                  },
+                  "role": "worker",
+                  "templateRefs": [
+                    {
+                      "name": "hcp-grouped-node-templates-v1",
+                      "namespace": "siteconfig-operator"
+                    }
+                  ]
+                }
+              }
+            ],
+            "networkType": "OVNKubernetes",
+            "nodes": [
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node1-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:11",
+                "group": "workers",
+                "hostName": "example-node1.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:2]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node2-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:22",
+                "group": "workers",
+                "hostName": "example-node2.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:3]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node3-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:33",
+                "group": "storage",
+                "hostName": "example-node3.example.com"
+              },
+              {
+                "bmcAddress": "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:4]/redfish/v1/Systems/System.Embedded.1",
+                "bmcCredentialsName": {
+                  "name": "example-node4-bmh-secret"
+                },
+                "bootMACAddress": "AA:BB:CC:DD:EE:44",
+                "group": "storage",
+                "hostName": "example-node4.example.com"
+              }
+            ],
+            "pullSecretRef": {
+              "name": "assisted-deployment-pull-secret"
+            },
+            "sshPublicKey": "ssh-rsa AAAA...",
+            "templateRefs": [
+              {
+                "name": "hcp-cluster-templates-v1",
                 "namespace": "siteconfig-operator"
               }
             ]
