@@ -257,7 +257,13 @@ spec:
                   nodes[] > groups[].nodeSpec > .spec: scalar fields resolve to the most
                   specific scope that sets them, maps are unioned by key with the node
                   value winning on collision, and lists are unioned (group entries first).
+                  A member node can override a value its group sets but cannot unset it: an
+                  empty scalar is treated as unset and inherits the group value, and map
+                  and list fields cannot drop group-provided keys or entries.
                   The group render loop is a no-op when groups is unset.
+                  Entries are keyed by name: the API server rejects duplicate names and
+                  server-side apply tracks each group by name rather than by position, so
+                  reordering groups does not change field ownership.
                 items:
                   description: |-
                     NodeGroupSpec defines a named group of nodes that share common configuration.
@@ -555,8 +561,10 @@ spec:
                   required:
                   - name
                   type: object
-                maxItems: 100
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               holdInstallation:
                 default: false
                 description: |-

@@ -147,13 +147,18 @@ The following rules apply:
 
 - A group `name` must be unique within the `ClusterInstance`, contain at most 63
   characters, and match `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`.
-- Every group must have at least one member node, and every `nodes[].group` value
-  must reference a defined group.
-- `groupTemplateRefs` render once per group, keyed by the group name. A group
-  with no member nodes is rejected before rendering.
+- When defined, every `nodes[].group` value must reference a defined group.
+- Every group must have at least one member node. `groupTemplateRefs` render once
+  for every `groups[]` entry regardless of membership, so a group with no members
+  would still render its group-scoped resources — for example an HCP `NodePool`
+  with `spec.replicas: 0`, or an `InfraEnv` with no hosts. Admission rejects the
+  resource instead of letting reconciliation create those dormant objects. To
+  fix it, assign a node to the group, or delete the group in the same update.
 - Identity fields (`hostName`, `bmcAddress`, `bmcCredentialsName`,
   `bootMACAddress`, `hostRef`, and `nodeNetwork`) belong on each node and cannot
-  be set on `groups[].nodeSpec`.
+  be set on `groups[].nodeSpec`. The CRD schema omits them, and the API server
+  prunes keys the schema does not define, so a field set here is silently
+  dropped.
 
 ### Merge precedence
 
@@ -166,6 +171,12 @@ nodes[] > groups[].nodeSpec > .spec
 Scalars resolve to the most specific value, lists are combined as a set union,
 and maps are combined by key with the most specific value winning on a collision.
 
+`extraLabels` and `extraAnnotations` are keyed by Kind and resolve per kind
+rather than per key: when a scope defines a Kind, its map for that Kind replaces
+the cluster-level map for the same Kind. The cluster-level map is only a fallback
+for kinds the scope does not define. See [Extra labels and
+annotations](#extra-labels-and-annotations) for the full precedence.
+
 **Group-only fields** (`groups[]`):
 
 | Field | Notes |
@@ -175,8 +186,8 @@ and maps are combined by key with the most specific value winning on a collision
 | `machineConfigRefs` | Exposed to group templates as `.SpecialVars.MachineConfigRefs` |
 | `tuningConfigRefs` | Exposed to group templates as `.SpecialVars.TuningConfigRefs` |
 | `groupTemplateRefs` | Rendered once per group |
-| `extraAnnotations` | Group-rendered objects only; union with `spec.extraAnnotations`, group wins |
-| `extraLabels` | Group-rendered objects only; union with `spec.extraLabels`, group wins |
+| `extraAnnotations` | Group-rendered objects only; replaces `spec.extraAnnotations` for a Kind the group defines |
+| `extraLabels` | Group-rendered objects only; replaces `spec.extraLabels` for a Kind the group defines |
 
 **Shared fields** (`groups[].nodeSpec` and `nodes[]`):
 
@@ -194,8 +205,61 @@ and maps are combined by key with the most specific value winning on a collision
 | `pruneManifests` | List union | Same scope rule as `suppressedManifests` |
 | `templateRefs` | List union | Union of group and node references |
 | `nodeLabels` | Map union | |
-| `extraAnnotations` | Map union | Member-node rendered objects only |
-| `extraLabels` | Map union | Member-node rendered objects only |
+| `extraAnnotations` | Per-Kind replacement | Member-node rendered objects only |
+| `extraLabels` | Per-Kind replacement | Member-node rendered objects only |
+
+#### Overriding and clearing inherited values
+
+A member node can override a value its group defines but cannot remove it. An
+empty scalar counts as unset during the merge, so leaving a scalar empty at the
+node scope inherits the group's value rather than clearing it. The affected
+scalars are:
+
+| Field | What an empty node value does |
+|---|---|
+| `role` | Inherits the group value; write `master` to request the rendering default |
+| `bootMode` | Inherits the group value; write `UEFI` to request the rendering default |
+| `automatedCleaningMode` | Inherits the group value; write `disabled` to request the rendering default |
+| `cpuArchitecture` | Inherits the group value and does not fall back to `spec.cpuArchitecture`; write the architecture explicitly, or move the node to a group that does not set it |
+| `ironicInspect` | Inherits the group value; a group that sets `disabled` cannot be re-enabled per node — use a group that does not set it |
+| `installerArgs` | Inherits the group value; use a group that does not set it to leave the field unset |
+| `ignitionConfigOverride` | Inherits the group value; use a group that does not set it to get no node-level override |
+
+`rootDeviceHints` behaves the same way: an omitted node value inherits the
+group's hints.
+
+`nodeLabels` is unioned by key, so a node can override a key the group sets but
+cannot remove it. `extraAnnotations` and `extraLabels` resolve per Kind: a Kind
+defined at the node scope replaces the group's map for that Kind, so a node can
+drop the group's entries for that Kind, but a Kind the node does not define is
+still inherited from the group. List fields (`suppressedManifests`,
+`pruneManifests`, `templateRefs`) are unioned, so a node cannot remove entries
+the group contributes. For `nodeLabels` and the list fields, the remedy is to
+set a non-empty value at the node or to move the node into a group that does
+not set the field.
+
+#### Extra labels and annotations
+
+`spec.extraLabels`, `groups[].extraLabels`, `groups[].nodeSpec.extraLabels`, and
+`nodes[].extraLabels` are all keyed by the Kind of the object being rendered.
+Application is scoped by which template rendered the object, and a Kind defined
+at the more specific scope replaces the cluster-level map for that Kind:
+
+| Rendered from | Source for a Kind | Otherwise |
+|---|---|---|
+| cluster-level templates (`.spec.templateRefs`) | `spec.extraLabels` / `spec.extraAnnotations` | — |
+| node templates, ungrouped or grouped | the node's effective map for that Kind | `spec.extraLabels` / `spec.extraAnnotations` |
+| `groupTemplateRefs` | `groups[].extraLabels` / `groups[].extraAnnotations` for that Kind | `spec.extraLabels` / `spec.extraAnnotations` |
+
+For a member node, a Kind defined in `nodes[]` replaces the group's map for
+that Kind; Kinds the node does not define come from
+`groups[].nodeSpec`. The resulting map then replaces the cluster-level map for
+that Kind. Group-scoped templates never receive node or `groups[].nodeSpec`
+values.
+
+The extra maps only fill in keys the template did not set. A label or annotation
+written literally in the template always wins, so remove it from the template if
+you want the value to come from `spec`, a group, or a node.
 
 **Node-only fields** (`nodes[]`):
 
@@ -226,8 +290,14 @@ Grouping adds two template families:
 | Grouped node | Once per grouped node | `hcp-grouped-node-templates-v1`, `ai-grouped-node-templates-v1` |
 
 The operator ships the group and grouped-node families for HyperShift and
-Assisted Installer clusters. Image-based installation (IBI) clusters are
-single-node and do not ship group templates.
+Assisted Installer clusters. Image-based installation (IBI) clusters have no
+built-in group templates because IBI is currently SNO-only. This is a shipping
+convention, not an API restriction: grouping is not gated on `clusterType`, so
+an IBI ClusterInstance can use `groups[]` with custom templates referenced from
+`groups[].groupTemplateRefs` and `groups[].nodeSpec.templateRefs` to try
+grouping before built-in IBI group templates exist. Today the `SNO` cluster type
+still requires exactly one control-plane agent, so an IBI attempt at grouping is
+limited to a single grouped node.
 
 The built-in HCP group templates render one `NodePool` per group with
 `spec.replicas` equal to the number of member nodes, plus one `InfraEnv` per
@@ -254,6 +324,30 @@ group. The AI group templates render one shared `InfraEnv` per group.
 
 Groups can be adopted incrementally: grouped and ungrouped nodes may coexist in
 the same `ClusterInstance`.
+
+### Node defaults and grouping
+
+The rendering defaults (`role: master`, `bootMode: UEFI`,
+`automatedCleaningMode: disabled`) are applied after the group merge rather than
+by the CRD, so a node or group value always wins over the default. They are the
+same values the CRD previously persisted, so an ungrouped `ClusterInstance`
+renders identically before and after the upgrade that removed the CRD defaults.
+
+If moving a node into a group changes its effective `role`, `bootMode`, or
+`automatedCleaningMode`, the webhook emits an admission warning naming the
+node and the old and new values.
+
+Groups can be added, removed, and reassigned after provisioning completes, as
+long as every existing node keeps the effective values that already applied to
+its manifests: `role`, `cpuArchitecture`, `bootMode`, `automatedCleaningMode`,
+`rootDeviceHints`, `installerArgs`, and `ignitionConfigOverride`. A change that
+alters one of these values for an existing node is rejected as an unauthorized
+node modification. A group's `machineConfigRefs` and `tuningConfigRefs` remain
+immutable after provisioning, and changing a group's `groupTemplateRefs` is
+accepted with a warning because admission cannot determine which group-scoped
+resources the change creates or removes. Because every group must keep at least
+one member, removing a group's last member requires deleting the group in the
+same update.
 
 ### Group pause
 

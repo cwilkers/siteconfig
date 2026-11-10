@@ -25,10 +25,12 @@ import (
 // MergeNodeSpec returns the effective NodeSpec for a node, applying
 // nodes[] > groups[].nodeSpec > .spec precedence with per-field strategies:
 // scalar fields resolve to the most specific scope that sets them, pointers
-// prefer the node value, maps are unioned by key with the node value winning
-// on collision, and lists are unioned with group entries first. Identity
-// fields (hostName, bmcAddress, bootMACAddress, bmcCredentialsName, hostRef,
-// nodeNetwork, group) are always taken from the node.
+// prefer the node value, nodeLabels is unioned by key with the node value
+// winning on collision, extraLabels and extraAnnotations resolve per Kind with
+// the node's map replacing the group's for the same Kind, and lists are
+// unioned with group entries first. Identity fields (hostName, bmcAddress,
+// bootMACAddress, bmcCredentialsName, hostRef, nodeNetwork, group) are always
+// taken from the node.
 //
 // MergeNodeSpec does not apply defaults: an unset field stays unset so that
 // an explicit value at a more specific scope is distinguishable from an
@@ -52,12 +54,14 @@ func MergeNodeSpec(group *GroupNodeSpec, node NodeSpec) NodeSpec {
 	merged.IgnitionConfigOverride = mergeScalar(node.IgnitionConfigOverride, group.IgnitionConfigOverride)
 
 	if node.RootDeviceHints == nil {
-		merged.RootDeviceHints = group.RootDeviceHints
+		// Deep copy so the effective spec does not alias the group's hints;
+		// every other field of the merge owns its data.
+		merged.RootDeviceHints = group.RootDeviceHints.DeepCopy()
 	}
 
 	merged.NodeLabels = unionStringMap(node.NodeLabels, group.NodeLabels)
-	merged.ExtraAnnotations = unionKindMap(node.ExtraAnnotations, group.ExtraAnnotations)
-	merged.ExtraLabels = unionKindMap(node.ExtraLabels, group.ExtraLabels)
+	merged.ExtraAnnotations = overrideKindMap(node.ExtraAnnotations, group.ExtraAnnotations)
+	merged.ExtraLabels = overrideKindMap(node.ExtraLabels, group.ExtraLabels)
 
 	merged.SuppressedManifests = unionStringList(group.SuppressedManifests, node.SuppressedManifests)
 	merged.TemplateRefs = unionTemplateRefs(group.TemplateRefs, node.TemplateRefs)
@@ -118,6 +122,17 @@ func EffectiveNodeSpec(group *GroupNodeSpec, node NodeSpec) NodeSpec {
 	return ApplyNodeSpecDefaults(MergeNodeSpec(group, node))
 }
 
+// effectiveNodeSpec resolves the node's group from a prebuilt index and returns
+// its effective (merged and defaulted) spec. An unknown group is treated as
+// absent; validation rejects unknown group references separately.
+func effectiveNodeSpec(node NodeSpec, groupIndex map[string]*NodeGroupSpec) NodeSpec {
+	var groupSpec *GroupNodeSpec
+	if group, exists := groupIndex[node.Group]; exists {
+		groupSpec = &group.NodeSpec
+	}
+	return EffectiveNodeSpec(groupSpec, node)
+}
+
 // mergeScalar resolves a shared scalar field with nodes[] > group precedence.
 // A field set on the node wins; an unset node field falls back to the group.
 func mergeScalar(nodeVal, groupVal string) string {
@@ -149,10 +164,12 @@ func unionStringMap(nodeMap, groupMap map[string]string) map[string]string {
 	return merged
 }
 
-// unionKindMap unions two per-Kind maps (e.g. extraLabels) by kind and then
-// by key; the node value wins on collision. A nil result is returned when
+// overrideKindMap resolves two per-Kind maps (e.g. extraLabels) by Kind: a Kind
+// the node defines replaces the group's map for that Kind entirely, matching
+// how a Kind at a more specific scope replaces the cluster-level map. Kinds the
+// node does not define are taken from the group. A nil result is returned when
 // both inputs are nil.
-func unionKindMap(nodeMap, groupMap map[string]map[string]string) map[string]map[string]string {
+func overrideKindMap(nodeMap, groupMap map[string]map[string]string) map[string]map[string]string {
 	if nodeMap == nil && groupMap == nil {
 		return nil
 	}
@@ -161,13 +178,7 @@ func unionKindMap(nodeMap, groupMap map[string]map[string]string) map[string]map
 		merged[kind] = maps.Clone(entries)
 	}
 	for kind, entries := range nodeMap {
-		if existing, ok := merged[kind]; ok && existing != nil {
-			for k, v := range entries {
-				existing[k] = v
-			}
-		} else {
-			merged[kind] = maps.Clone(entries)
-		}
+		merged[kind] = maps.Clone(entries)
 	}
 	return merged
 }

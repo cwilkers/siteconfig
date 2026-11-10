@@ -701,9 +701,16 @@ type ClusterInstanceSpec struct {
 	// nodes[] > groups[].nodeSpec > .spec: scalar fields resolve to the most
 	// specific scope that sets them, maps are unioned by key with the node
 	// value winning on collision, and lists are unioned (group entries first).
+	// A member node can override a value its group sets but cannot unset it: an
+	// empty scalar is treated as unset and inherits the group value, and map
+	// and list fields cannot drop group-provided keys or entries.
 	// The group render loop is a no-op when groups is unset.
+	// Entries are keyed by name: the API server rejects duplicate names and
+	// server-side apply tracks each group by name rather than by position, so
+	// reordering groups does not change field ownership.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
-	// +kubebuilder:validation:MaxItems=100
 	Groups []NodeGroupSpec `json:"groups,omitempty"`
 
 	// reinstall triggers a cluster reinstallation workflow when populated.

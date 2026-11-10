@@ -186,26 +186,26 @@ var _ = Describe("MergeNodeSpec", func() {
 		}))
 	})
 
-	It("unions extraLabels by kind then key with node winning", func() {
+	It("replaces the group extraLabels for a Kind with the node's map", func() {
 		node.ExtraLabels = map[string]map[string]string{
 			"BareMetalHost": {"node-label": "node", "shared": "node"},
 			"NodePool":      {"node-only": "node"},
 		}
 		merged := MergeNodeSpec(group, node)
 		Expect(merged.ExtraLabels).To(Equal(map[string]map[string]string{
-			"BareMetalHost": {"group-label": "group", "node-label": "node", "shared": "node"},
+			"BareMetalHost": {"node-label": "node", "shared": "node"},
 			"NMStateConfig": {"group-only": "group"},
 			"NodePool":      {"node-only": "node"},
 		}))
 	})
 
-	It("unions extraAnnotations by kind then key with node winning", func() {
+	It("replaces the group extraAnnotations for a Kind with the node's map", func() {
 		node.ExtraAnnotations = map[string]map[string]string{
 			"BareMetalHost": {"node-annotation": "node", "shared": "node"},
 		}
 		merged := MergeNodeSpec(group, node)
 		Expect(merged.ExtraAnnotations).To(Equal(map[string]map[string]string{
-			"BareMetalHost": {"group-annotation": "group", "node-annotation": "node", "shared": "node"},
+			"BareMetalHost": {"node-annotation": "node", "shared": "node"},
 		}))
 	})
 
@@ -374,7 +374,7 @@ var _ = Describe("EffectiveNodeSpec", func() {
 	})
 })
 
-var _ = Describe("unionKindMap nil handling", func() {
+var _ = Describe("overrideKindMap nil handling", func() {
 	It("does not panic when the group maps a kind to a nil inner map", func() {
 		group := &GroupNodeSpec{
 			ExtraLabels: map[string]map[string]string{"BareMetalHost": nil},

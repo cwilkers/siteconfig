@@ -9,7 +9,7 @@ approvers:
 api-approvers:
   - TBD
 creation-date: 2026-05-11
-last-updated: 2026-10-15
+last-updated: 2026-11-10
 status: provisional
 tracking-link:
   - https://redhat.atlassian.net/browse/CNF-21755
@@ -317,14 +317,23 @@ spec:
 **Field rules:**
 
 - `groups[].name` MUST be unique within the ClusterInstance.
+- Every `groups[]` entry MUST have at least one member node (a node whose
+  `group` equals its `name`), and every `nodes[].group` MUST reference a defined
+  group. See Implementation Note 5 for why empty groups are rejected rather
+  than skipped.
 - Group-only fields (`name`, `paused`, `machineConfigRefs`, `tuningConfigRefs`,
   `groupTemplateRefs`, `extraLabels`, `extraAnnotations`) live on the
   `groups[]` entry. `extraLabels` and `extraAnnotations` here apply
-  only to CRs rendered from that group's `groupTemplateRefs`.
+  only to CRs rendered from that group's `groupTemplateRefs`, and they
+  replace the `spec.extraLabels` / `spec.extraAnnotations` entry for the same
+  Kind rather than merging with it (see [Extra Labels and Annotations
+  Scope](#extra-labels-and-annotations-scope)).
 - Fields intended for member nodes live under `groups[].nodeSpec`. The
   CRD schema for `nodeSpec` MUST be the shareable subset of `NodeSpec`.
 - Identity fields MUST NOT be accepted on `groups[].nodeSpec`. The schema MUST
-  omit them so the API server rejects invalid usage.
+  omit them. A structural schema prunes keys it does not define, so an identity
+  field set on `groups[].nodeSpec` is dropped by the API server rather than
+  rejected, reflecting existing behavior for fields in `nodes[]`.
 - `groups[].groupTemplateRefs` are rendered once for that group.
 - `groups[].nodeSpec.templateRefs` are node templates inherited by
   members. A node MAY omit `templateRefs` when its group's
@@ -351,8 +360,8 @@ while rendering that group's templates.
 | `machineConfigRefs` | |
 | `tuningConfigRefs` | |
 | `groupTemplateRefs` | Rendered once per group |
-| `extraAnnotations` | Group-template CRs only. Union with `spec.extraAnnotations`; group wins. |
-| `extraLabels` | Group-template CRs only. Union with `spec.extraLabels`; group wins. |
+| `extraAnnotations` | Group-template CRs only. Replaces `spec.extraAnnotations` for a Kind the group defines. |
+| `extraLabels` | Group-template CRs only. Replaces `spec.extraLabels` for a Kind the group defines. |
 
 **Shared:**
 
@@ -365,6 +374,9 @@ node. The node value is the more specific one.
   using set union logic.
 - `Map union by key` means maps on `nodeSpec` and the node are combined
   by key. On a key collision, the most specific value stands.
+- `Per-Kind replacement` means a Kind the node defines replaces the
+  `nodeSpec` map for that Kind; Kinds the node does not define are
+  inherited from `nodeSpec`.
 
 | Field | Conflict strategy | Notes |
 |---|---|---|
@@ -380,8 +392,8 @@ node. The node value is the more specific one.
 | `pruneManifests` | List union | Same scope rule as `suppressedManifests`. |
 | `templateRefs` | List union | Union with `nodes[].templateRefs` |
 | `nodeLabels` | Map union | |
-| `extraAnnotations` | Map union | Member-node render loop only. Distinct from `groups[].extraAnnotations`. |
-| `extraLabels` | Map union | Member-node render loop only. Distinct from `groups[].extraLabels`. |
+| `extraAnnotations` | Per-Kind replacement | Member-node render loop only. Replaces `groups[].nodeSpec.extraAnnotations` for a Kind the node defines; see [Extra Labels and Annotations Scope](#extra-labels-and-annotations-scope). |
+| `extraLabels` | Per-Kind replacement | Member-node render loop only. Replaces `groups[].nodeSpec.extraLabels` for a Kind the node defines; see [Extra Labels and Annotations Scope](#extra-labels-and-annotations-scope). |
 
 **Node only:**
 
@@ -397,6 +409,36 @@ them on `groups[].nodeSpec` is an error.
 | `bootMACAddress` | |
 | `hostRef` | |
 | `nodeNetwork` | NMState dedup is future work |
+
+#### Extra Labels and Annotations Scope
+
+`spec.extraLabels` and `spec.extraAnnotations` are keyed by Kind. SiteConfig
+resolves them per rendered object with the same scope hierarchy it uses for the
+other fields, but the unit of resolution is the Kind: **a Kind defined at a more
+specific scope replaces the map for that Kind instead of merging with the
+less specific map.** The less specific map is only a fallback for Kinds the more
+specific scope does not define.
+
+```text
+node (effective) > group > .spec
+```
+
+- Objects rendered from `groups[].groupTemplateRefs` use the group's map for a
+  Kind when the group defines that Kind, and `spec`'s map otherwise. They never
+  see `groups[].nodeSpec` or node values.
+- Objects rendered from a node's templates use the node's effective map for a
+  Kind when it defines that Kind, and `spec`'s map otherwise. For a member node
+  the effective map resolves per Kind: a Kind defined in
+  `nodes[].extraLabels`/`extraAnnotations` replaces
+  `groups[].nodeSpec.extraLabels`/`extraAnnotations` for that Kind, and Kinds
+  the node does not define come from `groups[].nodeSpec`. The result then
+  replaces `spec`'s map for that Kind as a whole.
+- Values already present in the template are not overwritten; the extra maps
+  only supply keys the template did not set.
+
+Ungrouped nodes are unaffected: with no group values to merge, the effective
+node map is the node's own map, and the existing fallback to `spec` by Kind is
+unchanged.
 
 #### Template ConfigMap Families
 
@@ -474,8 +516,27 @@ For member nodes, `nodes[]` > `groups[].nodeSpec` > `.spec`.
 
 - **Scalars** As defined above, the definition of scalar fields override to the
 most specific scope.
-- **Maps** Key-based union. Collisions override to most specific scope.
+- **Maps** `nodeLabels` is unioned by key, with collisions resolved to the most
+specific scope. `extraLabels` and `extraAnnotations` are resolved per Kind: a
+Kind the node defines replaces the group's map for that Kind.
 - **Lists** Simple union.
+
+**Clearing inherited values:** a member node can override a value supplied by
+its group but cannot always remove it. An empty scalar is treated as unset, so
+leaving a scalar empty at the node scope inherits the group's value. The
+affected scalars are `role`, `cpuArchitecture`, `bootMode`,
+`automatedCleaningMode`, `ironicInspect`, `installerArgs`, and
+`ignitionConfigOverride`. `rootDeviceHints` behaves the same way: an omitted
+node value inherits the group's. `nodeLabels` is unioned by key, so a node can
+override a group-provided key but cannot remove it. `extraLabels` and
+`extraAnnotations` replace the group's map for a Kind the node defines, so a
+node can drop the group's entries for that Kind but not for a Kind it does not
+define. List fields (`suppressedManifests`, `pruneManifests`, `templateRefs`)
+are unioned, so a node cannot remove group entries. To give a member different
+behavior, set a non-empty value at the node or move the node to a group that
+does not set the field. For `role`, `bootMode`, and `automatedCleaningMode`,
+the post-merge rendering default (`master`, `UEFI`, `disabled`) can be
+requested by setting that value explicitly.
 
 ### Group Pause
 
@@ -544,8 +605,68 @@ ConfigMaps as HCP does.
    `UEFI`, `disabled`) MUST instead be applied after the merge, only to
    fields left unset at both the node and group scope.
 
-3. **IBI group templates:** IBI has no need of grouping because it is a SNO
-   case. We SHOULD NOT ship an `ibi-group-templates-v1` ConfigMap.
+   - **Backwards compatibility (Story 0):** the post-merge defaults MUST equal
+     the kubebuilder defaults they replace (`master`, `UEFI`, `disabled`).
+     Every consumer of a node spec — template rendering, validation, agent
+     counting — MUST read the effective (merged and defaulted) spec, so an
+     ungrouped ClusterInstance renders identically whether or not the API
+     server persisted the former defaults.
+
+   - **Changing defaults on an existing cluster:** joining a group can change a
+     node's effective defaults without the node itself changing, because a node
+     that relied on a rendering default inherits the group's value instead.
+     The webhook MUST reject a day-N update that changes an existing node's
+     effective `role`, `bootMode`, or `automatedCleaningMode`. Permitted
+     updates SHOULD emit an admission warning when these values change. See
+     Note 4 for how post-provisioning group changes are validated.
+
+3. **IBI group templates:** IBI is currently a SNO-only case, so grouping has
+   no use in the shipped IBI templates and we SHOULD NOT ship an
+   `ibi-group-templates-v1` ConfigMap yet. This is a shipping convention, not an
+   API restriction: the group render loop and validation MUST NOT reject
+   `spec.groups` based on `clusterType`, so a user can supply custom templates
+   through `groups[].groupTemplateRefs` and `groups[].nodeSpec.templateRefs` to
+   explore IBI grouping. If IBI gains multi-node support, first-class IBI group
+   templates can be added without an API change.
+
+4. **Post-provisioning group changes:** Adding and removing groups on a
+   ClusterInstance that has already been provisioned MUST be possible. A node
+   can join or leave a group, and `groups[]` entries can be added or removed, as
+   long as the change does not alter an existing node's effective configuration
+   in a way that conflicts with the immutability of the manifests already
+   applied to that node. Immutability barriers MUST therefore be based on the
+   effective (group-merged and defaulted) node spec, not on the raw
+   `nodes[].group` or `groups[]` paths: the same raw change is safe when the
+   group's values match the node's current values and unsafe when they do not.
+
+   - The webhook MUST reject an update that changes an existing node's effective
+     value for a field whose rendered value is immutable on a provisioned node —
+     at minimum `role`, `cpuArchitecture`, `bootMode`,
+     `automatedCleaningMode`, `rootDeviceHints`, `installerArgs`, and
+     `ignitionConfigOverride`. Such a change is a user error: the manifests
+     already applied to the node cannot be updated to match.
+   - A change that leaves every existing node's effective spec unchanged MUST
+     be accepted. Examples: adding a group whose `nodeSpec` matches the values
+     the nodes already have, moving nodes between groups with identical
+     `nodeSpec` values, or adding a group used only for group-scoped resources,
+     `extraLabels`, and `extraAnnotations`.
+   - Where the webhook cannot determine from the ClusterInstance alone whether
+     a rendered object will change — for example, adding `groupTemplateRefs`
+     that create a new group-scoped InfraEnv or NodePool — it SHOULD accept the
+     request and emit an admission warning rather than reject it. Detection
+     that requires rendering belongs in reconciliation, not admission.
+
+5. **Empty groups are rejected:** A `groups[]` entry MUST have at least one
+   member node. The group render loop visits every `groups[]` entry and does not
+   filter out groups without members; membership reaches the templates only as
+   `.SpecialVars.NodeCount`. A group with no members would therefore render real
+   objects with no backing nodes — for example an HCP `NodePool` with
+   `spec.replicas: 0` and an `InfraEnv`, or an AI `InfraEnv` with no hosts —
+   rather than rendering nothing. Validation MUST
+   reject the entry instead of introducing a "skip when empty" rule, which would
+   make a typo or an abandoned group silently render nothing. The remedy is to
+   assign a node to the group, or to delete the group in the same update; the
+   latter means removing a group's last member is not a standalone edit.
 
 ### Open Questions
 
@@ -576,6 +697,10 @@ ConfigMaps as HCP does.
 - Reconciliation re-renders and re-applies a group's rendered objects
   on every pass regardless of `GroupPaused`, i.e. a paused group is
   never skipped or short-circuited by the apply loop
+- Post-provisioning group changes: adding a group whose values match the
+  nodes, moving nodes between groups with identical values, and removing a
+  group are accepted; a change that would alter an existing node's effective
+  immutable attributes is rejected by the webhook
 
 **Integration Tests:**
 
@@ -719,6 +844,22 @@ deliberately designed not to block that path:
   nodes. Resolved open question 4.
   - Added `groups[].extraLabels` and `groups[].extraAnnotations` for
   CRs rendered from group templates, distinct from the `nodeSpec` copies.
+- 2026-11-10: Documented that a member node cannot unset a value supplied by
+  its group (empty scalars are treated as unset; maps and lists are unioned)
+  and listed the affected fields with their workarounds.
+- 2026-11-10: Implemented post-provisioning group changes (Note 4): day-N
+  validation follows the effective node spec, so group additions, removals,
+  and membership changes are accepted when existing nodes' effective immutable
+  attributes are unchanged, and rejected when they are not. Group
+  `machineConfigRefs` and `tuningConfigRefs` keep their own immutability rules,
+  and `groupTemplateRefs` changes on a provisioned cluster emit a warning.
+- 2026-11-11: Documented why a group with no member nodes is rejected (Note 5)
+  rather than skipped: the group render loop visits every `groups[]` entry, so an
+  empty group would still render group-scoped resources with no backing nodes.
+- 2026-11-12: Resolved the `extraLabels`/`extraAnnotations` merge for member
+  nodes: like the cluster-to-group rule, resolution is per Kind, so a Kind the
+  node defines replaces the group `nodeSpec` map for that Kind instead of
+  unioning by key. This keeps one rule for all extra-map scopes.
 
 ## Alternatives
 

@@ -187,17 +187,16 @@ func ValidateClusterInstance(clusterInstance *ClusterInstance) error {
 		return fmt.Errorf("missing cluster-level template reference")
 	}
 
-	// Validate group definitions and node-to-group references.
-	if err := validateGroupReferences(clusterInstance); err != nil {
+	// Validate group definitions and node-to-group references. The returned
+	// index is reused below so group names are only resolved once per
+	// validation.
+	groupIndex, err := validateGroupReferences(clusterInstance)
+	if err != nil {
 		return fmt.Errorf("invalid group definition(s): %w", err)
 	}
 
 	// Ensure each node has an effective template reference, taking any
 	// group-inherited templateRefs into account.
-	groupIndex, err := clusterInstance.Spec.groupIndex()
-	if err != nil {
-		return fmt.Errorf("invalid group definition(s): %w", err)
-	}
 	for _, node := range clusterInstance.Spec.Nodes {
 		var groupSpec *GroupNodeSpec
 		if group := groupIndex[node.Group]; group != nil {
@@ -214,7 +213,7 @@ func ValidateClusterInstance(clusterInstance *ClusterInstance) error {
 	}
 
 	// Validate control-plane agent count.
-	if err := validateControlPlaneAgentCount(clusterInstance); err != nil {
+	if err := validateControlPlaneAgentCount(clusterInstance, groupIndex); err != nil {
 		return fmt.Errorf("control-plane agent validation failed: %w", err)
 	}
 
@@ -245,24 +244,25 @@ func (spec *ClusterInstanceSpec) groupIndex() (map[string]*NodeGroupSpec, error)
 // validateGroupReferences ensures that group definitions and node-to-group
 // references are well formed: names are unique DNS-1123 labels, every
 // nodes[].group matches a defined group, every group has at least one member
-// node, and groupTemplateRefs entries are complete.
-func validateGroupReferences(clusterInstance *ClusterInstance) error {
+// node, and groupTemplateRefs entries are complete. It returns the resolved
+// group index so callers do not have to build it again.
+func validateGroupReferences(clusterInstance *ClusterInstance) (map[string]*NodeGroupSpec, error) {
 	index, err := clusterInstance.Spec.groupIndex()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for name, group := range index {
 		if len(name) > maxGroupNameLength {
-			return fmt.Errorf("group name %q is too long (%d chars, max allowed: %d)",
+			return nil, fmt.Errorf("group name %q is too long (%d chars, max allowed: %d)",
 				name, len(name), maxGroupNameLength)
 		}
 		if !groupNameRegex.MatchString(name) {
-			return fmt.Errorf("group name %q is invalid: must match regex %q", name, groupNameRegex.String())
+			return nil, fmt.Errorf("group name %q is invalid: must match regex %q", name, groupNameRegex.String())
 		}
 		for _, ref := range group.GroupTemplateRefs {
 			if ref.Name == "" || ref.Namespace == "" {
-				return fmt.Errorf("group %q groupTemplateRefs entries must specify both name and namespace", name)
+				return nil, fmt.Errorf("group %q groupTemplateRefs entries must specify both name and namespace", name)
 			}
 		}
 	}
@@ -273,18 +273,18 @@ func validateGroupReferences(clusterInstance *ClusterInstance) error {
 			continue
 		}
 		if _, exists := index[node.Group]; !exists {
-			return fmt.Errorf("node %q references unknown group %q", node.HostName, node.Group)
+			return nil, fmt.Errorf("node %q references unknown group %q", node.HostName, node.Group)
 		}
 		memberCounts[node.Group]++
 	}
 
 	for name := range index {
 		if memberCounts[name] == 0 {
-			return fmt.Errorf("group %q has no member nodes", name)
+			return nil, fmt.Errorf("group %q has no member nodes", name)
 		}
 	}
 
-	return nil
+	return index, nil
 }
 
 // validatePostProvisioningChanges checks for changes between old and new ClusterInstance specifications.
@@ -300,6 +300,20 @@ func validatePostProvisioningChanges(
 	// If there are unauthorized node modifications, reject immediately
 	if nodeAnalysis.hasUnauthorizedChanges {
 		return fmt.Errorf("detected unauthorized node modifications: %v", nodeAnalysis.errors)
+	}
+
+	// Grouping can change a node's effective configuration without changing the
+	// node itself. Permit group additions, removals, and membership changes as
+	// long as every existing node's effective spec is unchanged in the
+	// attributes that affect already-applied manifests.
+	if err := validateEffectiveNodeImmutability(oldClusterInstance, newClusterInstance, allowReinstall); err != nil {
+		return err
+	}
+
+	// Group-scoped references are not part of the effective node model, so they
+	// keep their own day-N immutability rules.
+	if err := validateGroupImmutability(oldClusterInstance, newClusterInstance); err != nil {
+		return err
 	}
 
 	// Log detected node operation
@@ -639,6 +653,11 @@ func getUnauthorizedJSONDiffs(oldNode, newNode NodeSpec, allowReinstall bool) []
 
 	var unauthorized []string
 	for _, diff := range diffs {
+		if diff.Path == "/group" {
+			// Group membership is immutable in the raw node, but is validated on
+			// the effective (group-merged) spec instead.
+			continue
+		}
 		if isCRDUpgradeFieldChange(diff) {
 			continue
 		}
@@ -663,6 +682,148 @@ func getNodeIdentifier(node NodeSpec) string {
 		return identifier
 	}
 	return "unknown"
+}
+
+// isPermissibleGroupChange returns true for spec changes that only add, remove,
+// or redefine a group. The effect of the change on existing nodes is validated
+// separately against their effective specs, and group fields that are not part
+// of that model keep their existing day-N rules.
+func isPermissibleGroupChange(fieldPath string) bool {
+	segments := strings.Split(fieldPath, "/")
+	if len(segments) == 2 {
+		// The whole groups list was added or removed.
+		return segments[1] == "groups"
+	}
+	if len(segments) < 3 || segments[1] != "groups" {
+		return false
+	}
+	if len(segments) == 3 {
+		return true // whole group entry added or removed
+	}
+	switch segments[3] {
+	case "name", "nodeSpec", "groupTemplateRefs":
+		return true
+	}
+	return false
+}
+
+// validateGroupImmutability rejects day-N changes to group-scoped references
+// that cannot be reconciled incrementally. Groups are keyed by name so the
+// check applies even when the whole groups list is added or replaced.
+func validateGroupImmutability(oldClusterInstance, newClusterInstance *ClusterInstance) error {
+	oldGroups := make(map[string]NodeGroupSpec, len(oldClusterInstance.Spec.Groups))
+	for _, group := range oldClusterInstance.Spec.Groups {
+		oldGroups[group.Name] = group
+	}
+
+	var unauthorized []string
+	for _, group := range newClusterInstance.Spec.Groups {
+		old, exists := oldGroups[group.Name]
+		if !exists {
+			continue // a new group has no applied state to conflict with
+		}
+		if !slices.Equal(old.MachineConfigRefs, group.MachineConfigRefs) {
+			unauthorized = append(unauthorized, fmt.Sprintf("group %q: machineConfigRefs", group.Name))
+		}
+		if !slices.Equal(old.TuningConfigRefs, group.TuningConfigRefs) {
+			unauthorized = append(unauthorized, fmt.Sprintf("group %q: tuningConfigRefs", group.Name))
+		}
+	}
+	if len(unauthorized) > 0 {
+		return fmt.Errorf("detected unauthorized changes in immutable fields: %s",
+			strings.Join(unauthorized, ", "))
+	}
+	return nil
+}
+
+// effectiveImmutableChanges returns the effective fields that changed in a way
+// that would conflict with the manifests already applied to a provisioned node.
+// The raw nodes are needed to keep the CRD-upgrade allowance for a
+// cpuArchitecture field that was added or removed by the API server.
+func effectiveImmutableChanges(
+	oldNode, newNode, oldEffective, newEffective NodeSpec, allowReinstall bool,
+) []string {
+	var changed []string
+	if oldEffective.Role != newEffective.Role {
+		changed = append(changed, "role")
+	}
+	if oldEffective.CPUArchitecture != newEffective.CPUArchitecture &&
+		oldNode.CPUArchitecture != "" && newNode.CPUArchitecture != "" {
+		changed = append(changed, "cpuArchitecture")
+	}
+	if oldEffective.BootMode != newEffective.BootMode {
+		changed = append(changed, "bootMode")
+	}
+	if oldEffective.AutomatedCleaningMode != newEffective.AutomatedCleaningMode {
+		changed = append(changed, "automatedCleaningMode")
+	}
+	if !allowReinstall && !equality.Semantic.DeepEqual(oldEffective.RootDeviceHints, newEffective.RootDeviceHints) {
+		changed = append(changed, "rootDeviceHints")
+	}
+	if oldEffective.InstallerArgs != newEffective.InstallerArgs {
+		changed = append(changed, "installerArgs")
+	}
+	if oldEffective.IgnitionConfigOverride != newEffective.IgnitionConfigOverride {
+		changed = append(changed, "ignitionConfigOverride")
+	}
+	return changed
+}
+
+// validateEffectiveNodeImmutability rejects day-N updates that change an
+// existing node's effective configuration in a way that conflicts with the
+// manifests already applied to it. Adding, removing, and re-assigning groups is
+// permitted as long as every existing node keeps its effective values for the
+// affected attributes.
+func validateEffectiveNodeImmutability(
+	oldClusterInstance, newClusterInstance *ClusterInstance,
+	allowReinstall bool,
+) error {
+	oldIndex, err := oldClusterInstance.Spec.groupIndex()
+	if err != nil {
+		return nil // invalid group definitions are rejected by general validation
+	}
+	newIndex, err := newClusterInstance.Spec.groupIndex()
+	if err != nil {
+		return nil
+	}
+
+	type nodeState struct {
+		raw       NodeSpec
+		effective NodeSpec
+	}
+
+	oldNodes := make(map[string]nodeState, len(oldClusterInstance.Spec.Nodes))
+	for _, node := range oldClusterInstance.Spec.Nodes {
+		key, err := generateNodeMatchingKey(node)
+		if err != nil {
+			continue
+		}
+		oldNodes[key] = nodeState{raw: node, effective: effectiveNodeSpec(node, oldIndex)}
+	}
+
+	var unauthorized []string
+	for _, node := range newClusterInstance.Spec.Nodes {
+		key, err := generateNodeMatchingKey(node)
+		if err != nil {
+			continue
+		}
+		old, exists := oldNodes[key]
+		if !exists {
+			continue // added nodes are validated as scaling operations
+		}
+		changes := effectiveImmutableChanges(
+			old.raw, node, old.effective, effectiveNodeSpec(node, newIndex), allowReinstall)
+		for _, field := range changes {
+			unauthorized = append(unauthorized, fmt.Sprintf("%s: effective %s", getNodeIdentifier(node), field))
+		}
+	}
+
+	if len(unauthorized) > 0 {
+		return fmt.Errorf(
+			"effective node changes conflict with the provisioned node's immutable manifests: %s",
+			strings.Join(unauthorized, ", "))
+	}
+	return nil
 }
 
 // isPermissibleNodeChange checks if a node field change is allowed
@@ -732,6 +893,10 @@ func validateChangesWithJSONDiff(
 	for _, diff := range diffs {
 		if pathMatchesAnyPattern(diff.Path, allowedUpdates) {
 			continue // Change is allowed
+		}
+
+		if isPermissibleGroupChange(diff.Path) {
+			continue // validated by validateEffectiveNodeImmutability
 		}
 
 		// Handle node array changes during scaling operations
@@ -936,7 +1101,7 @@ func validateClusterInstanceJSONFields(clusterInstance *ClusterInstance) error {
 
 		if !isValidJSON(group.NodeSpec.IgnitionConfigOverride) {
 			return fmt.Errorf(
-				"node-level ignitionConfigOverride is not a valid JSON-formatted string [Group: Name=%s]",
+				"group-level ignitionConfigOverride is not a valid JSON-formatted string [Group: Name=%s]",
 				group.Name,
 			)
 		}
@@ -947,13 +1112,12 @@ func validateClusterInstanceJSONFields(clusterInstance *ClusterInstance) error {
 
 // validateControlPlaneAgentCount ensures that the number of control-plane nodes is valid.
 // Roles are counted per effective node role, so a role supplied by a node's
-// group overrides an unset node role.
-func validateControlPlaneAgentCount(clusterInstance *ClusterInstance) error {
-	groupIndex, err := clusterInstance.Spec.groupIndex()
-	if err != nil {
-		return err
-	}
-
+// group overrides an unset node role. groupIndex must be the value returned by
+// validateGroupReferences.
+func validateControlPlaneAgentCount(
+	clusterInstance *ClusterInstance,
+	groupIndex map[string]*NodeGroupSpec,
+) error {
 	controlPlaneCount := 0
 	arbiterCount := 0
 	for _, node := range clusterInstance.Spec.Nodes {

@@ -544,6 +544,62 @@ func Test_buildClusterData_with_groups(t *testing.T) {
 	}
 }
 
+func Test_buildClusterData_matches_render_state(t *testing.T) {
+	clusterImageSet := &hivev1.ClusterImageSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-clusterimageset"},
+		Spec:       hivev1.ClusterImageSetSpec{ReleaseImage: "test-image"},
+	}
+
+	clusterInstance := &v1alpha1.ClusterInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "test-cluster"},
+		Spec: v1alpha1.ClusterInstanceSpec{
+			ClusterImageSetNameRef: "test-clusterimageset",
+			NetworkType:            "OVNKubernetes",
+			Nodes: []v1alpha1.NodeSpec{
+				{HostName: "node1", Group: "workers"},
+				{HostName: "node2", Group: "workers", Role: "master"},
+				{HostName: "node3"},
+			},
+			Groups: []v1alpha1.NodeGroupSpec{
+				{
+					Name:     "workers",
+					Paused:   true,
+					NodeSpec: v1alpha1.GroupNodeSpec{Role: "worker"},
+				},
+			},
+		},
+	}
+
+	testScheme := scheme.Scheme
+	schemeErr := hivev1.AddToScheme(testScheme)
+	assert.NoError(t, schemeErr)
+	c := fakeclient.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(clusterImageSet).
+		Build()
+	ctx := context.Background()
+
+	scopes := map[string]renderScope{
+		"cluster scope": {cluster: clusterInstance},
+		"group scope":   {cluster: clusterInstance, group: &clusterInstance.Spec.Groups[0]},
+		"node scope":    {cluster: clusterInstance, node: &clusterInstance.Spec.Nodes[0]},
+	}
+
+	state := newRenderState(clusterInstance)
+	for name, scope := range scopes {
+		t.Run(name, func(t *testing.T) {
+			onDemand, err := buildClusterData(ctx, c, scope)
+			assert.NoError(t, err)
+
+			scope.state = state
+			withState, err := buildClusterData(ctx, c, scope)
+			assert.NoError(t, err)
+
+			assert.Equal(t, onDemand, withState)
+		})
+	}
+}
+
 func Test_buildClusterData_counts_explicit_node_role_over_group(t *testing.T) {
 	clusterImageSet := &hivev1.ClusterImageSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-clusterimageset"},

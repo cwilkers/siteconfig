@@ -833,6 +833,12 @@ var _ = Describe("validateClusterInstanceJSONFields", func() {
 var _ = Describe("validateControlPlaneAgentCount", func() {
 	var clusterInstance *ClusterInstance
 
+	validate := func() error {
+		index, err := clusterInstance.Spec.groupIndex()
+		Expect(err).ToNot(HaveOccurred())
+		return validateControlPlaneAgentCount(clusterInstance, index)
+	}
+
 	BeforeEach(func() {
 		clusterInstance = &ClusterInstance{
 			Spec: ClusterInstanceSpec{
@@ -848,20 +854,20 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 	})
 
 	It("should pass for a valid single control-plane agent in SNO", func() {
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(BeNil())
 	})
 
 	It("should fail for zero control-plane agents", func() {
 		clusterInstance.Spec.Nodes = []NodeSpec{}
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("at least 1 control-plane agent is required"))
 	})
 
 	It("should fail for more than one control-plane agent in SNO", func() {
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "master-1", Role: "master"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("single node OpenShift cluster-type must have exactly 1 control-plane agent"))
 	})
@@ -869,7 +875,7 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 	It("should pass for multiple control-plane agents in Highly Available (MNO) clusters", func() {
 		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailable
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "master-1", Role: "master"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(BeNil())
 	})
 
@@ -878,14 +884,14 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "master-0", Role: "master"})
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "master-1", Role: "master"})
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "arbiter-1", Role: "arbiter"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(BeNil())
 	})
 
 	It("should fail for HighlyAvailableArbiter cluster with arbiter nodes and less than 2 master nodes", func() {
 		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailableArbiter
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "arbiter-1", Role: "arbiter"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("highly available arbiter cluster-type must have at least 1 arbiter agent and 2 control-plane agents"))
 	})
@@ -893,7 +899,7 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 	It("should fail for HighlyAvailableArbiter cluster without arbiter nodes", func() {
 		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailableArbiter
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "master-1", Role: "master"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("highly available arbiter cluster-type must have at least 1 arbiter agent"))
 	})
@@ -901,7 +907,7 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 	It("should fail for SNO cluster with arbiter nodes", func() {
 		clusterInstance.Spec.ClusterType = ClusterTypeSNO
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "arbiter-1", Role: "arbiter"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("arbiter agents can only be used with HighlyAvailableArbiter cluster-type"))
 	})
@@ -909,7 +915,7 @@ var _ = Describe("validateControlPlaneAgentCount", func() {
 	It("should fail for HighlyAvailable cluster with arbiter nodes", func() {
 		clusterInstance.Spec.ClusterType = ClusterTypeHighlyAvailable
 		clusterInstance.Spec.Nodes = append(clusterInstance.Spec.Nodes, NodeSpec{HostName: "arbiter-1", Role: "arbiter"})
-		expectErr := validateControlPlaneAgentCount(clusterInstance)
+		expectErr := validate()
 		Expect(expectErr).To(HaveOccurred())
 		Expect(expectErr.Error()).To(ContainSubstring("arbiter agents can only be used with HighlyAvailableArbiter cluster-type"))
 	})
@@ -1481,41 +1487,41 @@ var _ = Describe("validateGroupReferences", func() {
 	})
 
 	It("accepts valid group definitions and references", func() {
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("rejects duplicate group names", func() {
 		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: "workers"})
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("duplicate group"))
 	})
 
 	It("rejects a node referencing an unknown group", func() {
 		clusterInstance.Spec.Nodes[2].Group = "missing"
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("unknown group"))
 	})
 
 	It("rejects a node group reference when no groups are defined", func() {
 		clusterInstance.Spec.Groups = nil
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("unknown group"))
 	})
 
 	It("rejects a group with no member nodes", func() {
 		clusterInstance.Spec.Nodes = clusterInstance.Spec.Nodes[:2]
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("no member nodes"))
 	})
 
 	It("rejects an empty group name", func() {
 		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: ""})
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("group name cannot be empty"))
 	})
@@ -1523,28 +1529,28 @@ var _ = Describe("validateGroupReferences", func() {
 	It("rejects a group name that is too long", func() {
 		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups,
 			NodeGroupSpec{Name: strings.Repeat("a", 64)})
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("too long"))
 	})
 
 	It("rejects a group name with invalid characters", func() {
 		clusterInstance.Spec.Groups = append(clusterInstance.Spec.Groups, NodeGroupSpec{Name: "Invalid_Group"})
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("invalid"))
 	})
 
 	It("rejects a groupTemplateRefs entry missing a name", func() {
 		clusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{{Namespace: "default"}}
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("groupTemplateRefs"))
 	})
 
 	It("rejects a groupTemplateRefs entry missing a namespace", func() {
 		clusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{{Name: "group-template"}}
-		err := validateGroupReferences(clusterInstance)
+		_, err := validateGroupReferences(clusterInstance)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("groupTemplateRefs"))
 	})
@@ -1722,14 +1728,69 @@ var _ = Describe("day-N changes with groups", func() {
 		newClusterInstance.Spec.Groups[0].MachineConfigRefs = []string{"other-machineconfig"}
 		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("unauthorized changes in immutable fields: /groups/0/machineConfigRefs"))
+		Expect(err.Error()).To(ContainSubstring(
+			"detected unauthorized changes in immutable fields: group \"workers\": machineConfigRefs"))
 	})
 
-	It("rejects changing nodes[].group after provisioning completes", func() {
+	It("rejects moving a node to an undefined group after provisioning completes", func() {
 		newClusterInstance.Spec.Nodes[0].Group = "other"
 		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("unauthorized change to /group"))
+		Expect(err.Error()).To(ContainSubstring(
+			"effective node changes conflict with the provisioned node's immutable manifests"))
+		Expect(err.Error()).To(ContainSubstring("node1: effective role"))
+	})
+
+	It("allows swapping nodes between groups with identical effective values", func() {
+		oldClusterInstance.Spec.Groups = append(oldClusterInstance.Spec.Groups, NodeGroupSpec{
+			Name:     "other",
+			NodeSpec: GroupNodeSpec{Role: "worker"},
+		})
+		oldClusterInstance.Spec.Nodes = append(oldClusterInstance.Spec.Nodes,
+			NodeSpec{HostName: "node2", Group: "other"})
+		newClusterInstance = oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Nodes[0].Group = "other"
+		newClusterInstance.Spec.Nodes[1].Group = "workers"
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("allows removing a group when the node keeps its effective values", func() {
+		oldClusterInstance.Spec.Nodes[0].Role = "worker"
+		newClusterInstance = oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Groups = nil
+		newClusterInstance.Spec.Nodes[0].Group = ""
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("allows adding a group whose values match the node's explicit values", func() {
+		oldClusterInstance.Spec.Groups = nil
+		oldClusterInstance.Spec.Nodes[0].Group = ""
+		oldClusterInstance.Spec.Nodes[0].Role = "worker"
+		newClusterInstance = oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Groups = []NodeGroupSpec{
+			{Name: "workers", NodeSpec: GroupNodeSpec{Role: "worker"}},
+		}
+		newClusterInstance.Spec.Nodes[0].Group = "workers"
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).ToNot(HaveOccurred())
+	})
+
+	It("rejects a group nodeSpec change that alters a member's effective role", func() {
+		newClusterInstance.Spec.Groups[0].NodeSpec.Role = "master"
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(
+			"effective node changes conflict with the provisioned node's immutable manifests"))
+		Expect(err.Error()).To(ContainSubstring("node1: effective role"))
+	})
+
+	It("rejects a group nodeSpec change that alters a member's effective bootMode", func() {
+		newClusterInstance.Spec.Groups[0].NodeSpec.BootMode = "legacy"
+		err := validatePostProvisioningChanges(testLogger, oldClusterInstance, newClusterInstance, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("node1: effective bootMode"))
 	})
 })
 

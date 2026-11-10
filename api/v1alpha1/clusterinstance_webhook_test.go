@@ -667,6 +667,115 @@ var _ = Describe("groupTemplateMismatchWarnings", func() {
 	})
 })
 
+var _ = Describe("effectiveNodeDefaultWarnings", func() {
+	var oldClusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		oldClusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{
+						HostName:     "node1",
+						TemplateRefs: []TemplateRef{{Name: "custom-node-template", Namespace: "default"}},
+					},
+				},
+			},
+		}
+	})
+
+	It("warns when joining a group changes a node's effective role", func() {
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Nodes[0].Group = "workers"
+		newClusterInstance.Spec.Groups = []NodeGroupSpec{
+			{Name: "workers", NodeSpec: GroupNodeSpec{Role: "worker"}},
+		}
+
+		warnings := effectiveNodeDefaultWarnings(oldClusterInstance, newClusterInstance)
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("node1"))
+		Expect(warnings[0]).To(ContainSubstring("role"))
+		Expect(warnings[0]).To(ContainSubstring("master"))
+		Expect(warnings[0]).To(ContainSubstring("worker"))
+	})
+
+	It("does not warn when the effective defaults are unchanged", func() {
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Nodes[0].Group = "workers"
+		newClusterInstance.Spec.Groups = []NodeGroupSpec{
+			{Name: "workers", NodeSpec: GroupNodeSpec{Role: "master"}},
+		}
+
+		Expect(effectiveNodeDefaultWarnings(oldClusterInstance, newClusterInstance)).To(BeEmpty())
+	})
+
+	It("does not warn for nodes that are not in both specs", func() {
+		oldClusterInstance.Spec.Nodes[0].HostName = "node1"
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Nodes = []NodeSpec{
+			{HostName: "node2", TemplateRefs: []TemplateRef{{Name: "custom-node-template", Namespace: "default"}}},
+		}
+
+		Expect(effectiveNodeDefaultWarnings(oldClusterInstance, newClusterInstance)).To(BeEmpty())
+	})
+})
+
+var _ = Describe("groupTemplateRefChangeWarnings", func() {
+	var oldClusterInstance *ClusterInstance
+
+	BeforeEach(func() {
+		oldClusterInstance = &ClusterInstance{
+			Spec: ClusterInstanceSpec{
+				TemplateRefs: []TemplateRef{{Name: "cluster-template", Namespace: "default"}},
+				Nodes: []NodeSpec{
+					{HostName: "node1", Group: "workers"},
+				},
+				Groups: []NodeGroupSpec{
+					{
+						Name: "workers",
+						GroupTemplateRefs: []TemplateRef{
+							{Name: "group-template", Namespace: "default"},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	It("warns when groupTemplateRefs change after provisioning completes", func() {
+		oldClusterInstance.Status.Conditions = []metav1.Condition{
+			{Type: string(ClusterProvisioned), Status: metav1.ConditionTrue, Reason: string(Completed)},
+		}
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{
+			{Name: "other-group-template", Namespace: "default"},
+		}
+
+		warnings := groupTemplateRefChangeWarnings(oldClusterInstance, newClusterInstance)
+		Expect(warnings).To(HaveLen(1))
+		Expect(warnings[0]).To(ContainSubstring("groupTemplateRefs changed"))
+	})
+
+	It("does not warn before provisioning completes", func() {
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Groups[0].GroupTemplateRefs = []TemplateRef{
+			{Name: "other-group-template", Namespace: "default"},
+		}
+
+		Expect(groupTemplateRefChangeWarnings(oldClusterInstance, newClusterInstance)).To(BeEmpty())
+	})
+
+	It("does not warn when groupTemplateRefs are unchanged", func() {
+		oldClusterInstance.Status.Conditions = []metav1.Condition{
+			{Type: string(ClusterProvisioned), Status: metav1.ConditionTrue, Reason: string(Completed)},
+		}
+		newClusterInstance := oldClusterInstance.DeepCopy()
+		newClusterInstance.Spec.Groups[0].Paused = true
+
+		Expect(groupTemplateRefChangeWarnings(oldClusterInstance, newClusterInstance)).To(BeEmpty())
+	})
+})
+
 var _ = Describe("ValidateCreate with group template mismatch", func() {
 	var (
 		v               *clusterInstanceValidator

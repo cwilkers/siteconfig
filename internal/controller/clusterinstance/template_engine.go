@@ -43,11 +43,14 @@ type TemplateEngine struct{}
 // is always set; exactly one of node or group may also be set. When node is
 // set it holds the node's merged (effective) NodeSpec, so group-inherited
 // values are already applied. When group is set the scope is the group itself
-// and templates render once per group.
+// and templates render once per group. State carries values derived once per
+// reconciliation pass; it may be nil for direct tests, in which case it is
+// computed on demand.
 type renderScope struct {
 	cluster *v1alpha1.ClusterInstance
 	node    *v1alpha1.NodeSpec
 	group   *v1alpha1.NodeGroupSpec
+	state   *renderState
 }
 
 func NewTemplateEngine() *TemplateEngine {
@@ -63,11 +66,19 @@ func (te *TemplateEngine) ProcessTemplates(
 
 	log = log.Named("ProcessTemplates")
 
+	// Derive the values shared by every rendered template once. This keeps
+	// rendering linear in the number of nodes: each node's effective spec is
+	// merged once instead of once per rendered template.
+	state := newRenderState(&clusterInstance)
+
 	var renderedObjects RenderedObjectCollection
 	log.Info("Started processing cluster-level install templates")
 
 	// Render cluster-level install templates
-	clusterObjects, err := te.renderTemplates(ctx, c, log, renderScope{cluster: &clusterInstance})
+	clusterObjects, err := te.renderTemplates(ctx, c, log, renderScope{
+		cluster: &clusterInstance,
+		state:   state,
+	})
 	if err != nil {
 		log.Error("Encountered error while processing cluster-level install templates", zap.Error(err))
 		return renderedObjects, err
@@ -88,6 +99,7 @@ func (te *TemplateEngine) ProcessTemplates(
 		groupObjects, err := te.renderTemplates(ctx, c, log, renderScope{
 			cluster: &clusterInstance,
 			group:   &groupCopy,
+			state:   state,
 		})
 		if err != nil {
 			log.Sugar().Errorf(
@@ -105,20 +117,17 @@ func (te *TemplateEngine) ProcessTemplates(
 
 	// Process node-level install templates. Every node renders with its
 	// effective spec: group-inherited values merged in and rendering defaults
-	// applied.
+	// applied. The effective specs were computed once in state.
 	numNodes := len(clusterInstance.Spec.Nodes)
-	for nodeId, node := range clusterInstance.Spec.Nodes {
+	for nodeId := range clusterInstance.Spec.Nodes {
 		log.Sugar().Infof("Started processing node-level install templates [node: %d of %d]", nodeId+1, numNodes)
-		var groupSpec *v1alpha1.GroupNodeSpec
-		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
-			groupSpec = &group.NodeSpec
-		}
-		nodeCopy := v1alpha1.EffectiveNodeSpec(groupSpec, node)
+		nodeCopy := state.effectiveNodes[nodeId]
 
 		// Render node-level templates
 		nodeObjects, err := te.renderTemplates(ctx, c, log, renderScope{
 			cluster: &clusterInstance,
 			node:    &nodeCopy,
+			state:   state,
 		})
 		if err != nil {
 			log.Sugar().Errorf(
@@ -213,22 +222,20 @@ func appendAnnotationsAndLabels(
 			manifest = appendManifestLabels(extraManifestLabels, manifest)
 		}
 	case scope.group != nil:
-		// Append group-level user provided extra annotations if exist. The
-		// group is applied before the cluster so that, on a key collision,
-		// the group value wins; values already in the template are never
-		// overwritten.
+		// The group is the most specific scope for objects rendered from its
+		// groupTemplateRefs. As at the node scope, a Kind defined at this
+		// scope replaces the cluster-level map for that Kind; the cluster map
+		// is only a fallback for Kinds the group does not define. Values
+		// already in the template are never overwritten.
 		if extraManifestAnnotations, ok := scope.group.ExtraAnnotations[kind]; ok {
 			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
-		}
-		if extraManifestAnnotations, ok := scope.cluster.Spec.ExtraAnnotationSearch(kind); ok {
+		} else if extraManifestAnnotations, ok := scope.cluster.Spec.ExtraAnnotationSearch(kind); ok {
 			manifest = appendManifestAnnotations(extraManifestAnnotations, manifest)
 		}
 
-		// Append group-level user provided extra labels if exist
 		if extraManifestLabels, ok := scope.group.ExtraLabels[kind]; ok {
 			manifest = appendManifestLabels(extraManifestLabels, manifest)
-		}
-		if extraManifestLabels, ok := scope.cluster.Spec.ExtraLabelSearch(kind); ok {
+		} else if extraManifestLabels, ok := scope.cluster.Spec.ExtraLabelSearch(kind); ok {
 			manifest = appendManifestLabels(extraManifestLabels, manifest)
 		}
 	default:

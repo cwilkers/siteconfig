@@ -84,6 +84,9 @@ invalid group definition(s): group "storage" has no member nodes
 
 This usually means a group was added before its nodes, or the node `group`
 values were renamed. Either set `group: "storage"` on at least one node, or
-remove the unused group. Groups are only rendered when they have members, and an
-empty group is treated as a configuration error rather than silently skipped.
+remove the unused group in the same update. Group templates render once for
+every `spec.groups[]` entry regardless of membership, so an empty group would
+create group-scoped objects with no backing nodes (for example a `NodePool` with
+`spec.replicas: 0`). An empty group is therefore a configuration error rather
+than a silently skipped entry.
 

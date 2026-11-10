@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -69,6 +70,101 @@ func groupTemplateMismatchWarnings(clusterInstance *ClusterInstance) admission.W
 			}
 		}
 	}
+	return warnings
+}
+
+// effectiveNodeDefaultWarnings returns one warning per node whose effective
+// (group-merged and defaulted) role, bootMode, or automatedCleaningMode
+// changes in an update. Joining a group can change these values without the
+// node itself changing, because a node that relied on a rendering default
+// inherits the group's value instead. Post-provisioning updates that do this
+// are rejected as unauthorized node modifications; pre-provisioning updates
+// are allowed, but the change should not be silent.
+func effectiveNodeDefaultWarnings(
+	oldClusterInstance, newClusterInstance *ClusterInstance,
+) admission.Warnings {
+	oldIndex, err := oldClusterInstance.Spec.groupIndex()
+	if err != nil {
+		return nil
+	}
+	newIndex, err := newClusterInstance.Spec.groupIndex()
+	if err != nil {
+		return nil
+	}
+
+	oldDefaults := make(map[string]NodeSpec, len(oldClusterInstance.Spec.Nodes))
+	for _, node := range oldClusterInstance.Spec.Nodes {
+		if node.HostName == "" {
+			continue
+		}
+		oldDefaults[node.HostName] = effectiveNodeSpec(node, oldIndex)
+	}
+
+	var warnings admission.Warnings
+	for _, node := range newClusterInstance.Spec.Nodes {
+		if node.HostName == "" {
+			continue
+		}
+		oldEffective, exists := oldDefaults[node.HostName]
+		if !exists {
+			continue
+		}
+		effective := effectiveNodeSpec(node, newIndex)
+
+		if oldEffective.Role != effective.Role {
+			warnings = append(warnings, fmt.Sprintf(
+				"node %q effective role changes from %q to %q; node defaults cannot change after provisioning completes",
+				node.HostName, oldEffective.Role, effective.Role))
+		}
+		if oldEffective.BootMode != effective.BootMode {
+			warnings = append(warnings, fmt.Sprintf(
+				"node %q effective bootMode changes from %q to %q; node defaults cannot change after provisioning completes",
+				node.HostName, oldEffective.BootMode, effective.BootMode))
+		}
+		if oldEffective.AutomatedCleaningMode != effective.AutomatedCleaningMode {
+			warnings = append(warnings, fmt.Sprintf(
+				"node %q effective automatedCleaningMode changes from %q to %q; "+
+					"node defaults cannot change after provisioning completes",
+				node.HostName, oldEffective.AutomatedCleaningMode, effective.AutomatedCleaningMode))
+		}
+	}
+	return warnings
+}
+
+// groupTemplateRefChangeWarnings warns when a provisioned ClusterInstance
+// changes group-scoped template references. Admission cannot render templates,
+// so it cannot determine which group-scoped resources a change creates or
+// removes; reconciliation owns that detection.
+func groupTemplateRefChangeWarnings(
+	oldClusterInstance, newClusterInstance *ClusterInstance,
+) admission.Warnings {
+	if !isProvisioningCompleted(newClusterInstance) {
+		return nil
+	}
+	if equality.Semantic.DeepEqual(
+		groupTemplateRefsByName(oldClusterInstance), groupTemplateRefsByName(newClusterInstance)) {
+		return nil
+	}
+	return admission.Warnings{
+		"groupTemplateRefs changed on a provisioned ClusterInstance; " +
+			"group-scoped resources may be created or removed",
+	}
+}
+
+// groupTemplateRefsByName collects each group's template references by name.
+func groupTemplateRefsByName(clusterInstance *ClusterInstance) map[string][]TemplateRef {
+	refs := make(map[string][]TemplateRef, len(clusterInstance.Spec.Groups))
+	for _, group := range clusterInstance.Spec.Groups {
+		refs[group.Name] = group.GroupTemplateRefs
+	}
+	return refs
+}
+
+// updateWarnings collects the admission warnings for an update.
+func updateWarnings(oldClusterInstance, newClusterInstance *ClusterInstance) admission.Warnings {
+	warnings := groupTemplateMismatchWarnings(newClusterInstance)
+	warnings = append(warnings, effectiveNodeDefaultWarnings(oldClusterInstance, newClusterInstance)...)
+	warnings = append(warnings, groupTemplateRefChangeWarnings(oldClusterInstance, newClusterInstance)...)
 	return warnings
 }
 
@@ -167,7 +263,7 @@ func (v *clusterInstanceValidator) ValidateUpdate(
 			return nil, fmt.Errorf("%s: %w", validationFailedMsg, err)
 		}
 		log.Info("Validations passed for update request")
-		return groupTemplateMismatchWarnings(newClusterInstance), nil
+		return updateWarnings(oldClusterInstance, newClusterInstance), nil
 	}
 
 	// Partial changes allowed - validate specific fields based on permission level
@@ -203,7 +299,7 @@ func (v *clusterInstanceValidator) ValidateUpdate(
 	}
 
 	log.Info("Validations passed for update request")
-	return groupTemplateMismatchWarnings(newClusterInstance), nil
+	return updateWarnings(oldClusterInstance, newClusterInstance), nil
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type

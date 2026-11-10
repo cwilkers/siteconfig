@@ -78,6 +78,14 @@ var _ = Describe("ClusterInstance CRD schema", func() {
 		}
 	})
 
+	It("keys spec.groups by name so duplicates are rejected and order is not significant", func() {
+		for _, crdPath := range crdPaths {
+			groups := loadSpecProperties(crdPath)["groups"].(map[string]interface{})
+			Expect(groups).To(HaveKeyWithValue("x-kubernetes-list-type", "map"))
+			Expect(groups["x-kubernetes-list-map-keys"]).To(ConsistOf("name"))
+		}
+	})
+
 	It("does not default any inheritable node field in the CRD", func() {
 		// Inheritable fields are the ones shared by nodes[] and groups[].nodeSpec.
 		// They are resolved post-merge by ApplyNodeSpecDefaults so an explicit value

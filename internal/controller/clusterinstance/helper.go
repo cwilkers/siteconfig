@@ -134,6 +134,69 @@ func getInstallConfigOverrides(clusterInstance *v1alpha1.ClusterInstance) (strin
 	}
 }
 
+// renderState holds values derived from a ClusterInstance that are identical
+// for every template rendered during a single reconciliation pass. Computing
+// them once keeps rendering linear in the number of nodes instead of
+// re-merging every node spec for every rendered template.
+type renderState struct {
+	// groupIndex maps group names to their definitions.
+	groupIndex map[string]*v1alpha1.NodeGroupSpec
+	// effectiveNodes holds the merged and defaulted NodeSpec for each entry in
+	// Spec.Nodes, aligned by index.
+	effectiveNodes []v1alpha1.NodeSpec
+	// groupNodeCounts holds the number of member nodes per group name.
+	groupNodeCounts map[string]int
+	// controlPlaneAgents, workerAgents and arbiterAgents hold the number of
+	// nodes per effective role.
+	controlPlaneAgents int
+	workerAgents       int
+	arbiterAgents      int
+}
+
+// newRenderState derives the render state for a ClusterInstance in one pass
+// over its groups and nodes.
+func newRenderState(clusterInstance *v1alpha1.ClusterInstance) *renderState {
+	state := &renderState{
+		groupIndex:      make(map[string]*v1alpha1.NodeGroupSpec, len(clusterInstance.Spec.Groups)),
+		effectiveNodes:  make([]v1alpha1.NodeSpec, len(clusterInstance.Spec.Nodes)),
+		groupNodeCounts: make(map[string]int, len(clusterInstance.Spec.Groups)),
+	}
+
+	for i := range clusterInstance.Spec.Groups {
+		group := &clusterInstance.Spec.Groups[i]
+		// GetGroup resolves duplicate names to the first entry; validation
+		// rejects duplicates, so index them the same way.
+		if _, exists := state.groupIndex[group.Name]; !exists {
+			state.groupIndex[group.Name] = group
+		}
+	}
+
+	for i, node := range clusterInstance.Spec.Nodes {
+		var groupSpec *v1alpha1.GroupNodeSpec
+		if group, ok := state.groupIndex[node.Group]; ok {
+			groupSpec = &group.NodeSpec
+		}
+
+		effective := v1alpha1.EffectiveNodeSpec(groupSpec, node)
+		state.effectiveNodes[i] = effective
+
+		if node.Group != "" {
+			state.groupNodeCounts[node.Group]++
+		}
+
+		switch effective.Role {
+		case "master":
+			state.controlPlaneAgents++
+		case "worker":
+			state.workerAgents++
+		case "arbiter":
+			state.arbiterAgents++
+		}
+	}
+
+	return state
+}
+
 // buildClusterData returns a Cluster object that is consumed for rendering templates
 func buildClusterData(
 	ctx context.Context,
@@ -141,6 +204,12 @@ func buildClusterData(
 	scope renderScope,
 ) (data *ClusterData, err error) {
 	clusterInstance := scope.cluster
+
+	// Reuse the state computed once per reconciliation pass when available.
+	state := scope.state
+	if state == nil {
+		state = newRenderState(clusterInstance)
+	}
 
 	// Prepare specialVars
 	var currentNode v1alpha1.NodeSpec
@@ -155,7 +224,11 @@ func buildClusterData(
 	var machineConfigRefs, tuningConfigRefs []string
 	if scope.group != nil {
 		groupName = scope.group.Name
-		nodeCount = scope.group.NodeCount(clusterInstance.Spec.Nodes)
+		if count, ok := state.groupNodeCounts[groupName]; ok {
+			nodeCount = count
+		} else {
+			nodeCount = scope.group.NodeCount(clusterInstance.Spec.Nodes)
+		}
 		groupPaused = scope.group.Paused
 		machineConfigRefs = scope.group.MachineConfigRefs
 		tuningConfigRefs = scope.group.TuningConfigRefs
@@ -168,26 +241,11 @@ func buildClusterData(
 		installConfigOverrides = ""
 	}
 
-	// Determine the number of control-plane, worker, and arbiter agents,
-	// counting each node by its effective (group-merged and defaulted) role
-	controlPlaneAgents := 0
-	workerAgents := 0
-	arbiterAgents := 0
-	for _, node := range clusterInstance.Spec.Nodes {
-		var groupSpec *v1alpha1.GroupNodeSpec
-		if group, ok := clusterInstance.Spec.GetGroup(node.Group); ok {
-			groupSpec = &group.NodeSpec
-		}
-		role := v1alpha1.EffectiveNodeSpec(groupSpec, node).Role
-		switch role {
-		case "master":
-			controlPlaneAgents++
-		case "worker":
-			workerAgents++
-		case "arbiter":
-			arbiterAgents++
-		}
-	}
+	// The number of control-plane, worker, and arbiter agents is counted per
+	// effective (group-merged and defaulted) role in newRenderState.
+	controlPlaneAgents := state.controlPlaneAgents
+	workerAgents := state.workerAgents
+	arbiterAgents := state.arbiterAgents
 
 	if clusterInstance.Spec.ClusterType == v1alpha1.ClusterTypeSNO {
 		// Set the number of workers to 0 for SNO (Single Node OpenShift) clusters.

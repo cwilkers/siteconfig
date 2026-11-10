@@ -513,64 +513,6 @@ var _ = Describe("renderTemplates", func() {
 		Expect(isEqualRenderedObject(got, expected)).To(BeTrue())
 	})
 
-	It("renders a cluster-level template with extra annotations and labels", func() {
-
-		TestClusterInstance.Spec.TemplateRefs = []v1alpha1.TemplateRef{
-			{Name: "cluster-level", Namespace: "test"},
-		}
-
-		clusterTemplates := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster-level", Namespace: "test"},
-			Data: map[string]string{
-				"Cluster": GetMockBasicClusterTemplate("Cluster"),
-			},
-		}
-		Expect(c.Create(ctx, clusterTemplates)).To(Succeed())
-
-		TestClusterInstance.Spec.ExtraAnnotations = map[string]map[string]string{
-			"Cluster": {
-				"extra-annotation-l1": "test",
-				"extra-annotation-l2": "test",
-			},
-		}
-		TestClusterInstance.Spec.ExtraLabels = map[string]map[string]string{
-			"Cluster": {
-				"extra-labels-l1": "test",
-				"extra-labels-l2": "test",
-			},
-		}
-		got, err := tmplEngine.renderTemplates(ctx, c, testLogger, renderScope{cluster: TestClusterInstance})
-		Expect(err).ToNot(HaveOccurred())
-
-		expected := []RenderedObject{
-			{
-				action: actionRender,
-				object: unstructured.Unstructured{Object: map[string]interface{}{
-					"apiVersion": "test.io/v1",
-					"kind":       "Cluster",
-					"metadata": map[string]interface{}{
-						"name":      TestClusterInstance.Spec.ClusterName,
-						"namespace": TestClusterInstance.Namespace,
-						"annotations": map[string]interface{}{
-							"extra-annotation-l1": "test",
-							"extra-annotation-l2": "test",
-						},
-						"labels": map[string]interface{}{
-							OwnedByLabel:      GenerateOwnedByLabelValue(TestClusterInstance.Namespace, TestClusterInstance.Name),
-							"extra-labels-l1": "test",
-							"extra-labels-l2": "test",
-						},
-					},
-					"spec": map[string]interface{}{
-						"name": "site-sno-du-1",
-					},
-				}},
-			},
-		}
-
-		Expect(isEqualRenderedObject(got, expected)).To(BeTrue())
-	})
-
 	It("renders a node-level template with extra annotations and labels defined at cluster-level", func() {
 		node := &TestClusterInstance.Spec.Nodes[0]
 		node.TemplateRefs = []v1alpha1.TemplateRef{
@@ -1334,59 +1276,224 @@ spec:
 		}
 	})
 
-	It("applies group extraLabels only to group-rendered objects", func() {
-		groupTemplates := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: "group-level", Namespace: "test"},
-			Data:       map[string]string{"NodePool": GetMockBasicGroupTemplate("NodePool")},
-		}
-		Expect(c.Create(ctx, groupTemplates)).To(Succeed())
+	Context("extra labels and annotations", func() {
+		// One fixture covers every scope permutation. The Kinds are named after
+		// the scopes that define their extra metadata, so one spec can assert
+		// one rule per Kind:
+		//
+		//   Cluster   cluster
+		//   Group     cluster, group
+		//   GroupSpec group nodeSpec
+		//   Node      cluster, group, group nodeSpec, node
+		//
+		// The "plain" group defines no metadata at all. node2 belongs to it and
+		// defines nothing either, so it must inherit straight from the cluster.
+		var objects []RenderedObject
 
-		nodeTemplates := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
-			Data:       map[string]string{"NodePool": GetMockBasicNodeTemplate("NodePool")},
-		}
-		Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
-
-		TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
-			{
-				Name:              "workers",
-				GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "group-level", Namespace: "test"}},
-				ExtraLabels:       map[string]map[string]string{"NodePool": {"group-only": "group"}},
-			},
-		}
-		TestClusterInstance.Spec.Nodes[0].TemplateRefs = []v1alpha1.TemplateRef{
-			{Name: "node-level", Namespace: "test"},
-		}
-		TestClusterInstance.Spec.Nodes[0].ExtraLabels = map[string]map[string]string{
-			"NodePool": {"node-only": "node"},
-		}
-
-		rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
-		Expect(err).ToNot(HaveOccurred())
-
-		objects := rendered.GetRenderObjects()
-		// one cluster object, one group object, one node object with template
-		// refs; node2 has none and renders nothing
-		Expect(objects).To(HaveLen(3))
-
-		// Verify the expected objects were actually rendered so the label
-		// assertions below cannot pass vacuously
-		names := make([]string, 0, len(objects))
-		for _, object := range objects {
-			names = append(names, object.GetName())
-		}
-		Expect(names).To(ContainElements("workers", "node1", TestClusterInstance.Name))
-
-		for _, object := range objects {
-			if object.GetName() == "workers" {
-				Expect(object.GetLabels()).To(HaveKeyWithValue("group-only", "group"))
-				Expect(object.GetLabels()).ToNot(HaveKey("node-only"))
+		BeforeEach(func() {
+			groupTemplates := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "group-level", Namespace: "test"},
+				Data: map[string]string{
+					"Cluster": GetMockBasicGroupTemplate("Cluster"),
+					"Group":   GetMockBasicGroupTemplate("Group"),
+				},
 			}
-			if object.GetName() == "node1" {
-				Expect(object.GetLabels()).To(HaveKeyWithValue("node-only", "node"))
-				Expect(object.GetLabels()).ToNot(HaveKey("group-only"))
+			Expect(c.Create(ctx, groupTemplates)).To(Succeed())
+
+			nodeTemplates := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "node-level", Namespace: "test"},
+				Data: map[string]string{
+					"Cluster":   GetMockBasicNodeTemplate("Cluster"),
+					"GroupSpec": GetMockBasicNodeTemplate("GroupSpec"),
+					"Node":      GetMockBasicNodeTemplate("Node"),
+				},
+			}
+			Expect(c.Create(ctx, nodeTemplates)).To(Succeed())
+
+			TestClusterInstance.Spec.ExtraLabels = map[string]map[string]string{
+				"Cluster": {"cluster-only": "cluster", "cluster-extra": "cluster"},
+				"Group":   {"cluster-only": "cluster", "shared": "cluster"},
+				"Node":    {"cluster-only": "cluster", "shared": "cluster"},
+			}
+			TestClusterInstance.Spec.ExtraAnnotations = map[string]map[string]string{
+				"Cluster": {"cluster-annotation": "cluster", "cluster-extra-annotation": "cluster"},
+				"Group":   {"cluster-annotation": "cluster", "shared": "cluster"},
+				"Node":    {"cluster-annotation": "cluster", "shared": "cluster"},
+			}
+			TestClusterInstance.Spec.Groups = []v1alpha1.NodeGroupSpec{
+				{
+					Name:              "workers",
+					GroupTemplateRefs: []v1alpha1.TemplateRef{{Name: "group-level", Namespace: "test"}},
+					ExtraLabels: map[string]map[string]string{
+						"Group": {"group-only": "group", "shared": "group"},
+						"Node":  {"group-only": "group", "shared": "group"},
+					},
+					ExtraAnnotations: map[string]map[string]string{
+						"Group": {"group-annotation": "group", "shared": "group"},
+						"Node":  {"group-annotation": "group", "shared": "group"},
+					},
+					NodeSpec: v1alpha1.GroupNodeSpec{
+						ExtraLabels: map[string]map[string]string{
+							"GroupSpec": {"group-spec-only": "group"},
+							"Node":      {"group-spec-only": "group", "shared": "group"},
+						},
+						ExtraAnnotations: map[string]map[string]string{
+							"GroupSpec": {"group-spec-annotation": "group"},
+							"Node":      {"group-spec-annotation": "group", "shared": "group"},
+						},
+					},
+				},
+				{Name: "plain"},
+			}
+			TestClusterInstance.Spec.Nodes[0].TemplateRefs = []v1alpha1.TemplateRef{
+				{Name: "node-level", Namespace: "test"},
+			}
+			TestClusterInstance.Spec.Nodes[0].ExtraLabels = map[string]map[string]string{
+				"Node": {"node-only": "node", "shared": "node"},
+			}
+			TestClusterInstance.Spec.Nodes[0].ExtraAnnotations = map[string]map[string]string{
+				"Node": {"node-annotation": "node", "shared": "node"},
+			}
+			TestClusterInstance.Spec.Nodes[1].Group = "plain"
+			TestClusterInstance.Spec.Nodes[1].TemplateRefs = []v1alpha1.TemplateRef{
+				{Name: "node-level", Namespace: "test"},
+			}
+		})
+
+		render := func() {
+			rendered, err := tmplEngine.ProcessTemplates(ctx, c, testLogger, TestClusterInstance)
+			Expect(err).ToNot(HaveOccurred())
+			objects = rendered.GetRenderObjects()
+			// one cluster object, two group objects, and three node objects for
+			// each of node1 and node2
+			Expect(objects).To(HaveLen(9))
+		}
+
+		findObject := func(kind, name string) RenderedObject {
+			var found RenderedObject
+			for _, object := range objects {
+				if object.GetKind() == kind && object.GetName() == name {
+					found = object
+				}
+			}
+			Expect(found).ToNot(BeNil(), "expected %s %s to be rendered", kind, name)
+			return found
+		}
+
+		ownedBy := func() map[string]string {
+			return map[string]string{
+				OwnedByLabel: GenerateOwnedByLabelValue(TestClusterInstance.Namespace, TestClusterInstance.Name),
 			}
 		}
+
+		It("renders a cluster-level template with extra annotations and labels", func() {
+			render()
+
+			cluster := findObject("Cluster", TestClusterInstance.Spec.ClusterName)
+			labels := ownedBy()
+			labels["cluster-only"] = "cluster"
+			labels["cluster-extra"] = "cluster"
+			Expect(cluster.GetLabels()).To(Equal(labels))
+			Expect(cluster.GetAnnotations()).To(Equal(map[string]string{
+				"cluster-annotation":       "cluster",
+				"cluster-extra-annotation": "cluster",
+			}))
+		})
+
+		It("renders a group-level template with extra annotations and labels defined at cluster-level", func() {
+			render()
+
+			// The group defines no metadata for Cluster, so the group-rendered
+			// object falls back to the cluster-level maps.
+			cluster := findObject("Cluster", "workers")
+			labels := ownedBy()
+			labels["cluster-only"] = "cluster"
+			labels["cluster-extra"] = "cluster"
+			Expect(cluster.GetLabels()).To(Equal(labels))
+			Expect(cluster.GetAnnotations()).To(Equal(map[string]string{
+				"cluster-annotation":       "cluster",
+				"cluster-extra-annotation": "cluster",
+			}))
+		})
+
+		It("replaces the cluster extra annotations and labels for a Kind at the group scope", func() {
+			render()
+
+			// The group's map replaces the cluster-level map for Group, and the
+			// cluster keys the group does not share must not leak through.
+			group := findObject("Group", "workers")
+			labels := ownedBy()
+			labels["group-only"] = "group"
+			labels["shared"] = "group"
+			Expect(group.GetLabels()).To(Equal(labels))
+			Expect(group.GetAnnotations()).To(Equal(map[string]string{
+				"group-annotation": "group",
+				"shared":           "group",
+			}))
+		})
+
+		It("renders a node-level template with extra annotations and labels defined in groups[].nodeSpec", func() {
+			render()
+
+			// The node does not define GroupSpec, so the node-rendered object
+			// uses the group nodeSpec map.
+			groupSpec := findObject("GroupSpec", "node1")
+			labels := ownedBy()
+			labels["group-spec-only"] = "group"
+			Expect(groupSpec.GetLabels()).To(Equal(labels))
+			Expect(groupSpec.GetAnnotations()).To(Equal(map[string]string{
+				"group-spec-annotation": "group",
+			}))
+		})
+
+		It("replaces the cluster, group, and group nodeSpec extra annotations and labels for a Kind at the node scope", func() {
+			render()
+
+			// All four scopes define Node. The node's map wins the "shared"
+			// collision, and the cluster-only, group-only, and group-spec-only
+			// keys must not appear.
+			node := findObject("Node", "node1")
+			labels := ownedBy()
+			labels["node-only"] = "node"
+			labels["shared"] = "node"
+			Expect(node.GetLabels()).To(Equal(labels))
+			Expect(node.GetAnnotations()).To(Equal(map[string]string{
+				"node-annotation": "node",
+				"shared":          "node",
+			}))
+		})
+
+		It("falls back to the cluster extra annotations and labels for Kinds no scope defines", func() {
+			render()
+
+			// Only the cluster defines Cluster metadata for a node-rendered
+			// object, so it uses the cluster-level map.
+			cluster := findObject("Cluster", "node1")
+			labels := ownedBy()
+			labels["cluster-only"] = "cluster"
+			labels["cluster-extra"] = "cluster"
+			Expect(cluster.GetLabels()).To(Equal(labels))
+			Expect(cluster.GetAnnotations()).To(Equal(map[string]string{
+				"cluster-annotation":       "cluster",
+				"cluster-extra-annotation": "cluster",
+			}))
+		})
+
+		It("inherits cluster extra annotations and labels for a node in a group with no extras", func() {
+			render()
+
+			// Neither the plain group nor node2 defines Node metadata, so the
+			// cluster-level map is inherited unchanged, including its keys.
+			node := findObject("Node", "node2")
+			labels := ownedBy()
+			labels["cluster-only"] = "cluster"
+			labels["shared"] = "cluster"
+			Expect(node.GetLabels()).To(Equal(labels))
+			Expect(node.GetAnnotations()).To(Equal(map[string]string{
+				"cluster-annotation": "cluster",
+				"shared":             "cluster",
+			}))
+		})
 	})
 
 	It("suppresses node-rendered manifests using merged group suppressedManifests", func() {

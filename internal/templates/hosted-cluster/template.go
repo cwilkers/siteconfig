@@ -200,10 +200,6 @@ metadata:
   name: "{{ .SpecialVars.CurrentNode.HostName }}"
   namespace: "{{ .Spec.ClusterName }}"
 {{ end }}
-{{ if .Spec.ExtraLabels.NodePool }}
-  labels:
-{{ .Spec.ExtraLabels.NodePool | toYaml | indent 4 }}
-{{ end }}
 spec:
   clusterName: "{{ .Spec.ClusterName }}"
   replicas: 1
@@ -363,10 +359,6 @@ metadata:
     siteconfig.open-cluster-management.io/sync-wave: "2"
   name: "{{ .SpecialVars.GroupName }}"
   namespace: "{{ .Spec.ClusterName }}"
-{{ if .Spec.ExtraLabels.NodePool }}
-  labels:
-{{ .Spec.ExtraLabels.NodePool | toYaml | indent 4 }}
-{{ end }}
 spec:
   clusterName: "{{ .Spec.ClusterName }}"
   replicas: {{ .SpecialVars.NodeCount }}

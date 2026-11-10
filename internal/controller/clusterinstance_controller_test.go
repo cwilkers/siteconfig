@@ -3790,27 +3790,33 @@ var _ = Describe("applyACMBackupLabelToInstallTemplates", func() {
 		}
 	})
 
-	It("applies the ACM backup label to the HCP install templates only", func() {
+	It("exempts all built-in install templates from the ACM backup label", func() {
+		const (
+			customClusterTemplate = "custom-cluster-template"
+			customNodeTemplate    = "custom-node-template"
+		)
+
 		exemptNames := []string{
 			ai_templates.ClusterLevelInstallTemplates,
 			ai_templates.NodeLevelInstallTemplates,
 			ibi_templates.ClusterLevelInstallTemplates,
 			ibi_templates.NodeLevelInstallTemplates,
-		}
-		labeledNames := []string{
 			hcp_templates.ClusterLevelInstallTemplates,
 			hcp_templates.NodeLevelInstallTemplates,
 		}
+		labeledNames := []string{customClusterTemplate, customNodeTemplate}
 
 		clusterRefs := []v1alpha1.TemplateRef{
 			{Name: ai_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: ibi_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: hcp_templates.ClusterLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: customClusterTemplate, Namespace: siteConfigNamespace},
 		}
 		nodeRefs := []v1alpha1.TemplateRef{
 			{Name: ai_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: ibi_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: hcp_templates.NodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: customNodeTemplate, Namespace: siteConfigNamespace},
 		}
 
 		clusterInstance := &v1alpha1.ClusterInstance{
@@ -3854,24 +3860,30 @@ var _ = Describe("applyACMBackupLabelToInstallTemplates", func() {
 		}
 	})
 
-	It("applies the ACM backup label to group and grouped-node templates by family", func() {
+	It("exempts built-in group and grouped-node templates and labels custom ones", func() {
+		const (
+			customGroupTemplate       = "custom-group-template"
+			customGroupedNodeTemplate = "custom-grouped-node-template"
+		)
+
 		exemptNames := []string{
 			ai_templates.GroupLevelInstallTemplates,
 			ai_templates.GroupedNodeLevelInstallTemplates,
-		}
-		labeledNames := []string{
 			hcp_templates.GroupLevelInstallTemplates,
 			hcp_templates.GroupedNodeLevelInstallTemplates,
 		}
+		labeledNames := []string{customGroupTemplate, customGroupedNodeTemplate}
 
 		groupRefs := []v1alpha1.TemplateRef{
 			{Name: ai_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: hcp_templates.GroupLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: customGroupTemplate, Namespace: siteConfigNamespace},
 		}
 		// Grouped-node template refs come from the group's nodeSpec, not the node.
 		groupedNodeRefs := []v1alpha1.TemplateRef{
 			{Name: ai_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
 			{Name: hcp_templates.GroupedNodeLevelInstallTemplates, Namespace: siteConfigNamespace},
+			{Name: customGroupedNodeTemplate, Namespace: siteConfigNamespace},
 		}
 
 		clusterInstance := &v1alpha1.ClusterInstance{
